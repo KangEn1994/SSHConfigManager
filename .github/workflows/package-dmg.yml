@@ -1,0 +1,69 @@
+name: Package macOS DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version used in Info.plist and artifact naming"
+        required: true
+        default: "0.1.0"
+        type: string
+      notarize:
+        description: "Enable Apple notarization (requires Apple secrets)"
+        required: true
+        default: false
+        type: boolean
+      product_name:
+        description: "Display name shown in Finder and DMG volume"
+        required: true
+        default: "SSH Config Manager"
+        type: string
+      bundle_id:
+        description: "App bundle identifier"
+        required: true
+        default: "dev.sshconfigmanager.gui"
+        type: string
+
+jobs:
+  package-dmg:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ inputs.version }}
+      PRODUCT_NAME: ${{ inputs.product_name }}
+      BUNDLE_ID: ${{ inputs.bundle_id }}
+      NOTARIZE: ${{ inputs.notarize }}
+      SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+      SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+      SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show packaging mode
+        run: |
+          if [ -n "${SIGNING_IDENTITY}" ]; then
+            echo "Developer ID signing enabled."
+          else
+            echo "Developer ID signing not configured; ad-hoc signing will be used."
+          fi
+          echo "Notarize=${NOTARIZE}"
+
+      - name: Build and package DMG
+        run: |
+          chmod +x scripts/package_macos_dmg.sh
+          ./scripts/package_macos_dmg.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshcm-dmg-${{ inputs.version }}
+          path: |
+            dist/*.dmg
+            dist/*.app
+          if-no-files-found: error
