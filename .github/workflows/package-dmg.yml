@@ -1,28 +1,10 @@
 name: Package macOS DMG
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version used in Info.plist and artifact naming (optional override)"
-        required: false
-        default: ""
-        type: string
-      notarize:
-        description: "Enable Apple notarization (manual override, used when vars.NOTARIZE is empty)"
-        required: false
-        default: false
-        type: boolean
-      product_name:
-        description: "Display name shown in Finder and DMG volume (optional override)"
-        required: false
-        default: ""
-        type: string
-      bundle_id:
-        description: "App bundle identifier (optional override)"
-        required: false
-        default: ""
-        type: string
 
 jobs:
   package-dmg:
@@ -31,11 +13,11 @@ jobs:
       contents: read
     env:
       APP_NAME: ${{ vars.APP_NAME != '' && vars.APP_NAME || 'SSHConfigManagerGUI' }}
-      VERSION: ${{ vars.VERSION != '' && vars.VERSION || (inputs.version != '' && inputs.version || '0.1.0') }}
-      PRODUCT_NAME: ${{ vars.PRODUCT_NAME != '' && vars.PRODUCT_NAME || (inputs.product_name != '' && inputs.product_name || 'SSH Config Manager') }}
-      BUNDLE_ID: ${{ vars.BUNDLE_ID != '' && vars.BUNDLE_ID || (inputs.bundle_id != '' && inputs.bundle_id || 'dev.sshconfigmanager.gui') }}
+      VERSION: ${{ vars.VERSION != '' && vars.VERSION || '0.1.0' }}
+      PRODUCT_NAME: ${{ vars.PRODUCT_NAME != '' && vars.PRODUCT_NAME || 'SSH Config Manager' }}
+      BUNDLE_ID: ${{ vars.BUNDLE_ID != '' && vars.BUNDLE_ID || 'dev.sshconfigmanager.gui' }}
       MIN_MACOS_VERSION: ${{ vars.MIN_MACOS_VERSION != '' && vars.MIN_MACOS_VERSION || '14.0' }}
-      NOTARIZE: ${{ vars.NOTARIZE != '' && vars.NOTARIZE || (inputs.notarize && 'true' || 'false') }}
+      NOTARIZE: ${{ vars.NOTARIZE != '' && vars.NOTARIZE || 'true' }}
       FEISHU_ENABLE: ${{ vars.FEISHU_ENABLE != '' && vars.FEISHU_ENABLE || 'false' }}
       SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
       SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
