@@ -56,10 +56,12 @@ swift test
 
 ## CI/CD: Click-to-Package DMG
 
-This repository includes a manual GitHub Actions workflow:
+This repository includes a GitHub Actions workflow with both automatic and manual trigger:
 
 - Workflow file: `.github/workflows/package-dmg.yml`
-- Trigger mode: `workflow_dispatch` (click `Run workflow` in GitHub UI)
+- Trigger mode:
+  - `push` to `main` (auto build)
+  - `workflow_dispatch` (manual run)
 
 ### Configure Secrets
 
@@ -78,20 +80,15 @@ In `GitHub Repo -> Settings -> Secrets and variables -> Actions`, configure:
 
 ### How To Trigger
 
-1. Open GitHub `Actions` tab and select `Package macOS DMG`.
-2. Click `Run workflow`.
-3. Fill inputs:
-   - `version`: app version (used in `Info.plist` and artifact name)
-   - `product_name`: display name / DMG volume name
-   - `bundle_id`: app bundle identifier
-   - `notarize`: set `true` only when Apple notarization secrets are configured
-4. After the job completes, download artifacts from the run page (`dist/*.dmg` and `dist/*.app`).
+1. Push to `main` for automatic build, or run manually from GitHub `Actions`.
+2. After the job completes, download artifacts from the run page (`dist/*.dmg` and `dist/*.app`).
 
 ### Notes
 
 - If signing secrets are not configured, workflow still runs with ad-hoc signing (good for internal testing).
 - If `notarize=true` but Apple secrets are missing, workflow will fail fast with a clear error.
 - Packaging script: `scripts/package_macos_dmg.sh` (can also be run locally on macOS).
+- DMG now uses drag-install layout (`SSHConfigManagerGUI.app` + `Applications` symlink).
 
 ## First-time Migration Behavior
 

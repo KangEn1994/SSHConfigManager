@@ -52,6 +52,9 @@ cleanup() {
   if [[ -n "${TMP_KEYCHAIN:-}" ]]; then
     security delete-keychain "$TMP_KEYCHAIN" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${DMG_STAGING_DIR:-}" && -d "$DMG_STAGING_DIR" ]]; then
+    rm -rf "$DMG_STAGING_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -121,9 +124,14 @@ fi
 
 mkdir -p "$DIST_DIR"
 DMG_PATH="$DIST_DIR/$DMG_NAME"
+DMG_STAGING_DIR="$DIST_DIR/.dmg-root"
 
 echo "==> Creating DMG: $DMG_PATH"
-hdiutil create -volname "$PRODUCT_NAME" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_PATH"
+rm -rf "$DMG_STAGING_DIR"
+mkdir -p "$DMG_STAGING_DIR"
+cp -R "$APP_DIR" "$DMG_STAGING_DIR/"
+ln -s /Applications "$DMG_STAGING_DIR/Applications"
+hdiutil create -volname "$PRODUCT_NAME" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 
 if [[ -n "$SIGNING_IDENTITY" ]]; then
   echo "==> Signing DMG"

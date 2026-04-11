@@ -9,6 +9,22 @@ enum AppTab: Hashable {
     case keys
 }
 
+enum TerminalApp: String, CaseIterable, Identifiable {
+    case terminal
+    case iTerm
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .terminal:
+            return "Terminal"
+        case .iTerm:
+            return "iTerm"
+        }
+    }
+}
+
 enum AppLanguage: String, CaseIterable, Identifiable {
     case system
     case english
@@ -80,6 +96,21 @@ enum UIKey {
     case doctorDone
     case doctorFailed
     case keysLoadFailed
+    case savePreview
+    case savePreviewChanges
+    case savePreviewWarnings
+    case noChangesDetected
+    case confirmSave
+    case cancel
+    case rollbackLatest
+    case rolledBackToBackup
+    case rollbackFailed
+    case connectInTerminal
+    case terminalApp
+    case launchedTerminal
+    case terminalLaunchFailed
+    case appVersion
+    case validateWarningsPrefix
 }
 
 struct L10n {
@@ -148,6 +179,21 @@ struct L10n {
         case .doctorDone: return zh ? "巡检完成" : "Doctor complete"
         case .doctorFailed: return zh ? "巡检失败" : "Doctor failed"
         case .keysLoadFailed: return zh ? "密钥列表刷新失败" : "Failed to refresh key list"
+        case .savePreview: return zh ? "保存预览" : "Save Preview"
+        case .savePreviewChanges: return zh ? "变更内容" : "Changes"
+        case .savePreviewWarnings: return zh ? "风险提示" : "Warnings"
+        case .noChangesDetected: return zh ? "未检测到配置变更" : "No config changes detected"
+        case .confirmSave: return zh ? "确认保存" : "Confirm Save"
+        case .cancel: return zh ? "取消" : "Cancel"
+        case .rollbackLatest: return zh ? "回滚到最近备份" : "Rollback Latest Backup"
+        case .rolledBackToBackup: return zh ? "已回滚到备份" : "Rolled back to backup"
+        case .rollbackFailed: return zh ? "回滚失败" : "Rollback failed"
+        case .connectInTerminal: return zh ? "终端连接" : "Connect in Terminal"
+        case .terminalApp: return zh ? "终端工具" : "Terminal App"
+        case .launchedTerminal: return zh ? "已在终端发起连接" : "Launched connection in terminal"
+        case .terminalLaunchFailed: return zh ? "终端连接失败" : "Failed to launch terminal connection"
+        case .appVersion: return zh ? "版本" : "Version"
+        case .validateWarningsPrefix: return zh ? "发现风险" : "Validation warnings"
         }
     }
 
@@ -184,6 +230,12 @@ struct IdentityOption: Identifiable, Hashable {
         self.label = label
         self.value = value
     }
+}
+
+struct SavePlan {
+    var changes: [String]
+    var warnings: [String]
+    var previewText: String
 }
 
 struct HostDraft: Equatable {
@@ -352,9 +404,14 @@ final class AppModel: ObservableObject {
     @Published var importPath = ""
     @Published var addToAgent = true
     @Published var useKeychain = true
+    @Published var selectedTerminalApp: TerminalApp = .terminal
+    @Published var showSavePreview = false
+    @Published var pendingSavePlan: SavePlan?
 
     private let store = SSHConfigStore()
     private let keyManager = SSHKeyManager()
+    private let processRunner = ProcessRunner()
+    private let fileManager = FileManager.default
 
     var groupedHosts: [(String, [SSHHostEntry])] {
         let grouped = Dictionary(grouping: hosts) { $0.metadata.group }
@@ -408,6 +465,33 @@ final class AppModel: ObservableObject {
     }
 
     func saveConfig() {
+        prepareSave()
+    }
+
+    var appVersionDisplay: String {
+        let short = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?.trimmed ?? ""
+        let build = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String)?.trimmed ?? ""
+        if !short.isEmpty, !build.isEmpty {
+            return "\(short) (\(build))"
+        }
+        if !short.isEmpty {
+            return short
+        }
+        return "dev"
+    }
+
+    func prepareSave() {
+        guard !isDraftDirty else {
+            statusMessage = t(.draftMustSaveFirst)
+            return
+        }
+
+        let plan = buildSavePlan(currentHosts: hosts, baselineHosts: document.hosts, globalDirectives: document.globalDirectives)
+        pendingSavePlan = plan
+        showSavePreview = true
+    }
+
+    func confirmSaveFromPreview() {
         guard !isDraftDirty else {
             statusMessage = t(.draftMustSaveFirst)
             return
@@ -417,10 +501,22 @@ final class AppModel: ObservableObject {
             document.hosts = hosts
             let result = try store.save(document: document)
             let backup = result.backupURL?.lastPathComponent ?? "none"
-            statusMessage = "\(t(.savedHosts)): \(hosts.count), backup: \(backup)"
+            let warningCount = pendingSavePlan?.warnings.count ?? 0
+            if warningCount > 0 {
+                statusMessage = "\(t(.savedHosts)): \(hosts.count), backup: \(backup), \(t(.validateWarningsPrefix)): \(warningCount)"
+            } else {
+                statusMessage = "\(t(.savedHosts)): \(hosts.count), backup: \(backup)"
+            }
+            showSavePreview = false
+            pendingSavePlan = nil
         } catch {
             statusMessage = "\(t(.saveFailed)): \(error.localizedDescription)"
         }
+    }
+
+    func cancelSavePreview() {
+        showSavePreview = false
+        pendingSavePlan = nil
     }
 
     func loadDraftForSelection() {
@@ -522,6 +618,185 @@ final class AppModel: ObservableObject {
             statusMessage = "\(t(.doctorFailed)): \(error.localizedDescription)"
         }
     }
+
+    func rollbackLatestBackup() {
+        do {
+            guard let latest = try latestBackupURL() else {
+                statusMessage = "\(t(.rollbackFailed)): no backup found"
+                return
+            }
+            if fileManager.fileExists(atPath: store.configFileURL.path) {
+                _ = try fileManager.replaceItemAt(store.configFileURL, withItemAt: latest)
+            } else {
+                try fileManager.copyItem(at: latest, to: store.configFileURL)
+            }
+            load()
+            statusMessage = "\(t(.rolledBackToBackup)): \(latest.lastPathComponent)"
+        } catch {
+            statusMessage = "\(t(.rollbackFailed)): \(error.localizedDescription)"
+        }
+    }
+
+    func connectSelectedInTerminal() {
+        guard let host = selectedHost else { return }
+        do {
+            let alias = host.primaryAlias.trimmed
+            guard !alias.isEmpty else {
+                statusMessage = "\(t(.terminalLaunchFailed)): empty host alias"
+                return
+            }
+
+            // Validate host alias against local ssh config first, so we can fail fast in GUI.
+            _ = try processRunner.run(executable: "/usr/bin/ssh", arguments: ["-G", alias], allowNonZeroExit: false)
+
+            let command = """
+            echo "=== SSH Config Manager ==="
+            echo "Connecting: \(alias)"
+            echo "Terminal: \(selectedTerminalApp.displayName)"
+            echo
+            /usr/bin/ssh \(shellQuote(alias))
+            code=$?
+            echo
+            echo "ssh exited with status $code"
+            """
+            try launchTerminal(command: command, terminal: selectedTerminalApp)
+            statusMessage = "\(t(.launchedTerminal)): \(alias) (\(selectedTerminalApp.displayName))"
+        } catch {
+            statusMessage = "\(t(.terminalLaunchFailed)): \(error.localizedDescription)"
+        }
+    }
+
+    private func latestBackupURL() throws -> URL? {
+        guard fileManager.fileExists(atPath: store.backupDirectoryURL.path) else { return nil }
+        let files = try fileManager.contentsOfDirectory(
+            at: store.backupDirectoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )
+            .filter { $0.lastPathComponent.hasPrefix("config.") && $0.pathExtension == "bak" }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return leftDate > rightDate
+            }
+        return files.first
+    }
+
+    private func launchTerminal(command: String, terminal: TerminalApp) throws {
+        let script: String
+        let escaped = command.replacingOccurrences(of: "\"", with: "\\\"")
+        switch terminal {
+        case .terminal:
+            script = """
+            tell application "Terminal"
+                activate
+                do script "\(escaped)"
+            end tell
+            """
+        case .iTerm:
+            script = """
+            tell application "iTerm"
+                activate
+                if (count of windows) = 0 then
+                    create window with default profile
+                end if
+                tell current session of current window
+                    write text "\(escaped)"
+                end tell
+            end tell
+            """
+        }
+        _ = try processRunner.run(executable: "/usr/bin/osascript", arguments: ["-e", script])
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
+    }
+
+    private func buildSavePlan(currentHosts: [SSHHostEntry], baselineHosts: [SSHHostEntry], globalDirectives: [SSHDirective]) -> SavePlan {
+        var changes: [String] = []
+        let baselineMap = Dictionary(uniqueKeysWithValues: baselineHosts.map { ($0.id, $0) })
+        let currentMap = Dictionary(uniqueKeysWithValues: currentHosts.map { ($0.id, $0) })
+
+        for host in currentHosts where baselineMap[host.id] == nil {
+            changes.append("+ \(host.primaryAlias) [\(host.metadata.group)]")
+        }
+        for host in baselineHosts where currentMap[host.id] == nil {
+            changes.append("- \(host.primaryAlias) [\(host.metadata.group)]")
+        }
+        for host in currentHosts {
+            guard let old = baselineMap[host.id], old != host else { continue }
+            changes.append("~ \(host.primaryAlias): \(diffSummary(old: old, new: host))")
+        }
+        if changes.isEmpty {
+            changes = [t(.noChangesDetected)]
+        }
+
+        let warnings = validate(hosts: currentHosts, globalDirectives: globalDirectives)
+        let preview = currentHosts
+            .sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
+            .map { host in
+                """
+                Host \(host.aliases.joined(separator: " "))
+                  HostName \(host.hostName)
+                  User \(host.user ?? "-")
+                  Group \(host.metadata.group)
+                  ProxyJump \(host.proxyJump ?? "-")
+                  ProxyCommand \(host.proxyCommand ?? "-")
+                """
+            }
+            .joined(separator: "\n\n")
+        return SavePlan(changes: changes, warnings: warnings, previewText: preview)
+    }
+
+    private func diffSummary(old: SSHHostEntry, new: SSHHostEntry) -> String {
+        var fields: [String] = []
+        if old.hostName != new.hostName { fields.append("HostName") }
+        if old.user != new.user { fields.append("User") }
+        if old.port != new.port { fields.append("Port") }
+        if old.identityFile != new.identityFile { fields.append("IdentityFile") }
+        if old.proxyJump != new.proxyJump { fields.append("ProxyJump") }
+        if old.proxyCommand != new.proxyCommand { fields.append("ProxyCommand") }
+        if old.metadata.group != new.metadata.group { fields.append("Group") }
+        if old.metadata.tags != new.metadata.tags { fields.append("Tags") }
+        if old.forwards != new.forwards { fields.append("Forwards") }
+        if old.aliases != new.aliases { fields.append("Aliases") }
+        return fields.isEmpty ? "details updated" : fields.joined(separator: ", ")
+    }
+
+    private func validate(hosts: [SSHHostEntry], globalDirectives: [SSHDirective]) -> [String] {
+        var warnings: [String] = []
+        var aliasSet: Set<String> = []
+        for host in hosts {
+            if host.primaryAlias.trimmed.isEmpty {
+                warnings.append("Host has empty alias")
+            }
+            if host.hostName.trimmed.isEmpty {
+                warnings.append("Host \(host.primaryAlias) has empty HostName")
+            }
+            for alias in host.aliases {
+                let lower = alias.lowercased()
+                if aliasSet.contains(lower) {
+                    warnings.append("Duplicate alias: \(alias)")
+                } else {
+                    aliasSet.insert(lower)
+                }
+            }
+            if let jump = host.proxyJump, let command = host.proxyCommand, !jump.trimmed.isEmpty, !command.trimmed.isEmpty {
+                warnings.append("Host \(host.primaryAlias) has both ProxyJump and ProxyCommand")
+            }
+        }
+
+        let includeValues = globalDirectives
+            .filter { $0.key.caseInsensitiveCompare("Include") == .orderedSame }
+            .map { $0.value.lowercased() }
+        if includeValues.contains(where: { $0.contains(".ssh/config") && !$0.contains("config.d/*.conf") }) {
+            warnings.append("Global Include points to ~/.ssh/config and may cause recursive includes")
+        }
+
+        return Array(Set(warnings)).sorted()
+    }
 }
 
 struct ContentView: View {
@@ -545,12 +820,36 @@ struct ContentView: View {
             if model.selectedTab == .connections {
                 ToolbarItemGroup {
                     Button(model.t(.reload)) { model.load() }
-                    Button(model.t(.saveConfig)) { model.saveConfig() }
+                    Button(model.t(.saveConfig)) { model.prepareSave() }
+                    Button(model.t(.rollbackLatest)) { model.rollbackLatestBackup() }
                     Button(model.t(.addHost)) { model.addHost() }
                     Button(model.t(.deleteHost)) { model.deleteSelectedHost() }
                         .disabled(model.selectedHost == nil)
                 }
+
+                ToolbarItemGroup {
+                    Picker(model.t(.terminalApp), selection: $model.selectedTerminalApp) {
+                        ForEach(TerminalApp.allCases) { app in
+                            Text(app.displayName).tag(app)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    Button(model.t(.connectInTerminal)) { model.connectSelectedInTerminal() }
+                        .disabled(model.selectedHost == nil)
+                }
             }
+
+            ToolbarItem(placement: .status) {
+                Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .sheet(isPresented: $model.showSavePreview) {
+            SavePreviewSheet()
+                .environmentObject(model)
+                .frame(minWidth: 720, minHeight: 520)
         }
     }
 
@@ -561,6 +860,72 @@ struct ContentView: View {
             }
         }
         .pickerStyle(.menu)
+    }
+}
+
+struct SavePreviewSheet: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(model.t(.savePreview))
+                .font(.headline)
+
+            if let plan = model.pendingSavePlan {
+                GroupBox(model.t(.savePreviewChanges)) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(plan.changes, id: \.self) { line in
+                                Text(line)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 120)
+                }
+
+                GroupBox(model.t(.savePreviewWarnings)) {
+                    if plan.warnings.isEmpty {
+                        Text("None")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(plan.warnings, id: \.self) { warning in
+                                    Text("• \(warning)")
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(minHeight: 90)
+                    }
+                }
+
+                GroupBox("Config Preview") {
+                    ScrollView {
+                        Text(plan.previewText.isEmpty ? model.t(.noChangesDetected) : plan.previewText)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button(model.t(.cancel)) {
+                    model.cancelSavePreview()
+                }
+                Button(model.t(.confirmSave)) {
+                    model.confirmSaveFromPreview()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
     }
 }
 
@@ -592,9 +957,15 @@ struct ConnectionsTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider()
-                Text(model.statusMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(model.statusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding(16)
@@ -629,6 +1000,33 @@ struct HostEditorView: View {
                     reloadFromModel()
                 }
                 .disabled(!localDirty)
+            }
+
+            HStack(spacing: 8) {
+                Picker(model.t(.terminalApp), selection: $model.selectedTerminalApp) {
+                    ForEach(TerminalApp.allCases) { app in
+                        Text(app.displayName).tag(app)
+                    }
+                }
+                .frame(width: 150)
+
+                Button(model.t(.connectInTerminal)) {
+                    model.connectSelectedInTerminal()
+                }
+                .disabled(model.selectedHost == nil)
+
+                Button(model.t(.rollbackLatest)) {
+                    model.rollbackLatestBackup()
+                }
+
+                Button(model.t(.saveConfig)) {
+                    model.prepareSave()
+                }
+
+                Spacer()
+                Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {

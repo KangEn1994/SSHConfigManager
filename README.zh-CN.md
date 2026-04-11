@@ -56,10 +56,12 @@ swift test
 
 ## CI/CD：点击触发 DMG 打包
 
-仓库已内置一个可手动触发的 GitHub Actions 工作流：
+仓库已内置一个支持自动和手动触发的 GitHub Actions 工作流：
 
 - 工作流文件：`.github/workflows/package-dmg.yml`
-- 触发方式：`workflow_dispatch`（在 GitHub 页面点击 `Run workflow`）
+- 触发方式：
+  - `push` 到 `main` 自动构建
+  - `workflow_dispatch` 手动触发
 
 ### 配置 Secrets
 
@@ -78,20 +80,15 @@ swift test
 
 ### 触发步骤
 
-1. 打开 GitHub `Actions`，选择 `Package macOS DMG`。
-2. 点击 `Run workflow`。
-3. 填写输入参数：
-   - `version`：应用版本号（用于 `Info.plist` 和产物命名）
-   - `product_name`：应用显示名称 / DMG 卷名
-   - `bundle_id`：应用 Bundle ID
-   - `notarize`：只有在 Apple 公证 secrets 已配置时才设置为 `true`
-4. 任务完成后，在该次运行页面下载产物（`dist/*.dmg` 和 `dist/*.app`）。
+1. 推送到 `main` 会自动构建，或在 GitHub `Actions` 手动运行。
+2. 任务完成后，在该次运行页面下载产物（`dist/*.dmg` 和 `dist/*.app`）。
 
 ### 说明
 
 - 未配置签名 secrets 时，工作流仍可运行，会使用 ad-hoc 签名（适合内部测试）。
 - 若 `notarize=true` 但缺少 Apple secrets，工作流会快速失败并给出明确报错。
 - 打包脚本位于 `scripts/package_macos_dmg.sh`（也支持在本地 macOS 手动执行）。
+- DMG 已改为拖拽安装布局（`SSHConfigManagerGUI.app` + `Applications` 软链接）。
 
 ## 首次接管与迁移行为
 
