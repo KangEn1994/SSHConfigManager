@@ -1025,35 +1025,84 @@ final class AppModel: ObservableObject {
     }
 
     private func launchTerminal(command: String, terminal: TerminalApp) throws {
-        let script: String
         let escaped = command.replacingOccurrences(of: "\"", with: "\\\"")
         switch terminal {
         case .terminal:
-            script = """
+            let script = """
             tell application "Terminal"
                 activate
                 do script "\(escaped)"
+                return "ok"
             end tell
             """
+            try runAppleScriptExpectingOK(script)
         case .iTerm:
-            script = """
-            tell application "iTerm"
+            let iTerm2Script = """
+            tell application "iTerm2"
                 activate
-                try
-                    if (count of windows) = 0 then
-                        create window with default profile command "\(escaped)"
-                    else
+                if (count of windows) = 0 then
+                    create window with default profile command "\(escaped)"
+                else
+                    try
                         tell current window
                             create tab with default profile command "\(escaped)"
                         end tell
-                    end if
-                on error
-                    create window with default profile command "\(escaped)"
-                end try
+                    on error
+                        tell first window
+                            create tab with default profile command "\(escaped)"
+                        end tell
+                    end try
+                end if
+                if (count of windows) > 0 then
+                    return "ok"
+                else
+                    error "failed to create iTerm2 window/session"
+                end if
             end tell
             """
+            let iTermScript = """
+            tell application "iTerm"
+                activate
+                if (count of windows) = 0 then
+                    create window with default profile command "\(escaped)"
+                else
+                    try
+                        tell current window
+                            create tab with default profile command "\(escaped)"
+                        end tell
+                    on error
+                        tell first window
+                            create tab with default profile command "\(escaped)"
+                        end tell
+                    end try
+                end if
+                if (count of windows) > 0 then
+                    return "ok"
+                else
+                    error "failed to create iTerm window/session"
+                end if
+            end tell
+            """
+
+            do {
+                try runAppleScriptExpectingOK(iTerm2Script)
+            } catch {
+                // Fallback for environments that expose dictionary/app name as "iTerm".
+                try runAppleScriptExpectingOK(iTermScript)
+            }
         }
-        _ = try processRunner.run(executable: "/usr/bin/osascript", arguments: ["-e", script])
+    }
+
+    private func runAppleScriptExpectingOK(_ script: String) throws {
+        let result = try processRunner.run(
+            executable: "/usr/bin/osascript",
+            arguments: ["-e", script],
+            allowNonZeroExit: false
+        )
+        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard output.contains("ok") else {
+            throw SSHCMError.ioError("Terminal launch script did not confirm success")
+        }
     }
 
     private func shellQuote(_ value: String) -> String {

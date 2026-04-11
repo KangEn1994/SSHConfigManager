@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="${APP_NAME:-SSHConfigManagerGUI}"
 BUNDLE_ID="${BUNDLE_ID:-dev.sshconfigmanager.gui}"
-VERSION="${VERSION:-0.9.0}"
+VERSION="${VERSION:-0.9.1}"
 MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-14.0}"
 DIST_DIR="${DIST_DIR:-dist}"
 PRODUCT_NAME="${PRODUCT_NAME:-$APP_NAME}"
