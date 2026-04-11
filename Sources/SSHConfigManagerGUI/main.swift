@@ -1040,16 +1040,23 @@ final class AppModel: ObservableObject {
             tell application "iTerm"
                 activate
                 if (count of windows) = 0 then
-                    set newWindow to (create window with default profile)
-                    delay 0.1
-                    tell current session of newWindow
-                        write text "\(escaped)"
-                    end tell
+                    set targetWindow to (create window with default profile)
                 else
-                    tell current session of current window
-                        write text "\(escaped)"
-                    end tell
+                    try
+                        set targetWindow to current window
+                    on error
+                        set targetWindow to first window
+                    end try
                 end if
+                delay 0.1
+                try
+                    set targetSession to current session of targetWindow
+                on error
+                    set targetSession to first session of targetWindow
+                end try
+                tell targetSession
+                    write text "\(escaped)"
+                end tell
             end tell
             """
         }
