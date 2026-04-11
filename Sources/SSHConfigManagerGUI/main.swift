@@ -7,6 +7,7 @@ import SSHCMCore
 enum AppTab: Hashable {
     case connections
     case keys
+    case logs
 }
 
 enum TerminalApp: String, CaseIterable, Identifiable {
@@ -36,6 +37,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 enum UIKey {
     case tabConnections
     case tabKeys
+    case tabLogs
     case language
     case languageSystem
     case languageEnglish
@@ -138,6 +140,7 @@ enum UIKey {
     case keyMetaSaved
     case keyMetaSaveFailed
     case keyMetaLoadFailed
+    case viewLogs
 }
 
 struct L10n {
@@ -146,6 +149,7 @@ struct L10n {
         switch key {
         case .tabConnections: return zh ? "连接管理" : "Connections"
         case .tabKeys: return zh ? "密钥管理" : "Keys"
+        case .tabLogs: return zh ? "日志信息" : "Logs"
         case .language: return zh ? "语言" : "Language"
         case .languageSystem: return zh ? "跟随系统" : "System"
         case .languageEnglish: return "English"
@@ -248,6 +252,7 @@ struct L10n {
         case .keyMetaSaved: return zh ? "密钥信息已保存" : "Key metadata saved"
         case .keyMetaSaveFailed: return zh ? "密钥信息保存失败" : "Failed to save key metadata"
         case .keyMetaLoadFailed: return zh ? "密钥信息加载失败" : "Failed to load key metadata"
+        case .viewLogs: return zh ? "查看日志信息" : "View Logs"
         }
     }
 
@@ -518,6 +523,19 @@ final class AppModel: ObservableObject {
         return grouped.keys.sorted().map { key in
             let values = (grouped[key] ?? []).sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
             return (key, values)
+        }
+    }
+
+    var groupedKeyItems: [(String, [SSHLocalKey])] {
+        let grouped = Dictionary(grouping: keyItems) { key in
+            let group = keyMetadata(for: key.name).group.trimmed
+            return group.isEmpty ? "default" : group
+        }
+        return grouped.keys.sorted().map { group in
+            let values = (grouped[group] ?? []).sorted { lhs, rhs in
+                keyDisplayTitle(for: lhs).lowercased() < keyDisplayTitle(for: rhs).lowercased()
+            }
+            return (group, values)
         }
     }
 
@@ -1370,6 +1388,10 @@ struct ContentView: View {
             KeyToolsTabView()
                 .tabItem { Text(model.t(.tabKeys)) }
                 .tag(AppTab.keys)
+
+            LogsTabView()
+                .tabItem { Text(model.t(.tabLogs)) }
+                .tag(AppTab.logs)
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -1561,7 +1583,16 @@ struct ConnectionsTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider()
-                LogsPanelView()
+                HStack {
+                    Text(model.statusMessage.isEmpty ? model.t(.logsEmpty) : model.statusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(model.t(.viewLogs)) {
+                        model.selectedTab = .logs
+                    }
+                }
                 Spacer()
             }
             .padding(16)
@@ -1858,6 +1889,7 @@ struct HostEditorView: View {
 
 struct LogsPanelView: View {
     @EnvironmentObject private var model: AppModel
+    var compact: Bool = true
 
     var body: some View {
         GroupBox(model.t(.logs)) {
@@ -1898,9 +1930,23 @@ struct LogsPanelView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(minHeight: 80, maxHeight: 160)
+                .frame(minHeight: compact ? 80 : 320, maxHeight: compact ? 160 : .infinity)
             }
         }
+    }
+}
+
+struct LogsTabView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(model.t(.logs))
+                .font(.headline)
+            LogsPanelView(compact: false)
+            Spacer()
+        }
+        .padding(16)
     }
 }
 
@@ -1942,47 +1988,62 @@ struct KeyToolsTabView: View {
                 Text(model.t(.noKeys))
                     .foregroundStyle(.secondary)
             } else {
-                List(model.keyItems) { key in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(model.keyDisplayTitle(for: key))
-                            .font(.headline)
-                        HStack {
-                            Text(model.t(.keyAlias))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 54, alignment: .leading)
-                            TextField(model.t(.keyAlias), text: keyAliasBinding(for: key))
-                        }
-                        HStack {
-                            Text(model.t(.keyGroup))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 54, alignment: .leading)
-                            TextField(model.t(.keyGroup), text: keyGroupBinding(for: key))
-                        }
-                        if let privatePath = key.privateKeyPath {
-                            Text("\(model.t(.privateKeyPath)): \(privatePath)")
-                                .font(.caption)
-                                .textSelection(.enabled)
-                        }
-                        if let publicPath = key.publicKeyPath {
-                            Text("\(model.t(.publicKeyPath)): \(publicPath)")
-                                .font(.caption)
-                                .textSelection(.enabled)
-                        }
-                        if let fingerprint = key.fingerprint {
-                            Text("\(model.t(.fingerprint)): \(fingerprint)")
-                                .font(.caption)
-                                .textSelection(.enabled)
+                List {
+                    ForEach(model.groupedKeyItems, id: \.0) { group, keys in
+                        Section(group) {
+                            ForEach(keys) { key in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(model.keyDisplayTitle(for: key))
+                                        .font(.headline)
+                                    HStack {
+                                        Text(model.t(.keyAlias))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 54, alignment: .leading)
+                                        TextField(model.t(.keyAlias), text: keyAliasBinding(for: key))
+                                    }
+                                    HStack {
+                                        Text(model.t(.keyGroup))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 54, alignment: .leading)
+                                        TextField(model.t(.keyGroup), text: keyGroupBinding(for: key))
+                                    }
+                                    if let privatePath = key.privateKeyPath {
+                                        Text("\(model.t(.privateKeyPath)): \(privatePath)")
+                                            .font(.caption)
+                                            .textSelection(.enabled)
+                                    }
+                                    if let publicPath = key.publicKeyPath {
+                                        Text("\(model.t(.publicKeyPath)): \(publicPath)")
+                                            .font(.caption)
+                                            .textSelection(.enabled)
+                                    }
+                                    if let fingerprint = key.fingerprint {
+                                        Text("\(model.t(.fingerprint)): \(fingerprint)")
+                                            .font(.caption)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
                         }
                     }
-                    .padding(.vertical, 2)
                 }
                 .listStyle(.inset)
             }
 
             Divider()
-            LogsPanelView()
+            HStack {
+                Text(model.statusMessage.isEmpty ? model.t(.logsEmpty) : model.statusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button(model.t(.viewLogs)) {
+                    model.selectedTab = .logs
+                }
+            }
             Spacer()
         }
         .padding(16)
