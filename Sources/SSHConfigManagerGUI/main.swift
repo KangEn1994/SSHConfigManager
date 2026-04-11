@@ -13,17 +13,11 @@ enum AppTab: Hashable {
 
 enum TerminalApp: String, CaseIterable, Identifiable {
     case terminal
-    case iTerm
 
     var id: String { rawValue }
 
     var displayName: String {
-        switch self {
-        case .terminal:
-            return "Terminal"
-        case .iTerm:
-            return "iTerm"
-        }
+        "Terminal"
     }
 }
 
@@ -499,7 +493,6 @@ final class AppModel: ObservableObject {
     @Published var importPath = ""
     @Published var addToAgent = true
     @Published var useKeychain = true
-    @Published var selectedTerminalApp: TerminalApp = .terminal
     @Published var showSavePreview = false
     @Published var pendingSavePlan: SavePlan?
     @Published var logs: [LogEntry] = []
@@ -1000,9 +993,9 @@ final class AppModel: ObservableObject {
             _ = try processRunner.run(executable: "/usr/bin/ssh", arguments: ["-G", alias], allowNonZeroExit: false)
 
             let command = "/usr/bin/ssh \(shellQuote(alias))"
-            try launchTerminal(command: command, terminal: selectedTerminalApp)
+            try launchTerminal(command: command)
             rememberRecentConnection(alias)
-            setInfo("\(t(.launchedTerminal)): \(alias) (\(selectedTerminalApp.displayName))")
+            setInfo("\(t(.launchedTerminal)): \(alias) (Terminal)")
         } catch {
             setError("\(t(.terminalLaunchFailed)): \(error.localizedDescription)")
         }
@@ -1024,73 +1017,16 @@ final class AppModel: ObservableObject {
         return files.first
     }
 
-    private func launchTerminal(command: String, terminal: TerminalApp) throws {
+    private func launchTerminal(command: String) throws {
         let escaped = command.replacingOccurrences(of: "\"", with: "\\\"")
-        switch terminal {
-        case .terminal:
-            let script = """
-            tell application "Terminal"
-                activate
-                do script "\(escaped)"
-                return "ok"
-            end tell
-            """
-            try runAppleScriptExpectingOK(script)
-        case .iTerm:
-            let iTerm2Script = """
-            tell application "iTerm2"
-                activate
-                if (count of windows) = 0 then
-                    create window with default profile command "\(escaped)"
-                else
-                    try
-                        tell current window
-                            create tab with default profile command "\(escaped)"
-                        end tell
-                    on error
-                        tell first window
-                            create tab with default profile command "\(escaped)"
-                        end tell
-                    end try
-                end if
-                if (count of windows) > 0 then
-                    return "ok"
-                else
-                    error "failed to create iTerm2 window/session"
-                end if
-            end tell
-            """
-            let iTermScript = """
-            tell application "iTerm"
-                activate
-                if (count of windows) = 0 then
-                    create window with default profile command "\(escaped)"
-                else
-                    try
-                        tell current window
-                            create tab with default profile command "\(escaped)"
-                        end tell
-                    on error
-                        tell first window
-                            create tab with default profile command "\(escaped)"
-                        end tell
-                    end try
-                end if
-                if (count of windows) > 0 then
-                    return "ok"
-                else
-                    error "failed to create iTerm window/session"
-                end if
-            end tell
-            """
-
-            do {
-                try runAppleScriptExpectingOK(iTerm2Script)
-            } catch {
-                // Fallback for environments that expose dictionary/app name as "iTerm".
-                try runAppleScriptExpectingOK(iTermScript)
-            }
-        }
+        let script = """
+        tell application "Terminal"
+            activate
+            do script "\(escaped)"
+            return "ok"
+        end tell
+        """
+        try runAppleScriptExpectingOK(script)
     }
 
     private func runAppleScriptExpectingOK(_ script: String) throws {
@@ -1186,7 +1122,7 @@ final class AppModel: ObservableObject {
                   <tr><td>保存到 SSH 配置</td><td>把当前内存中的连接配置正式写入 <code>~/.ssh/config</code> 和 <code>~/.ssh/config.d/*.conf</code>。</td></tr>
                   <tr><td>新增连接</td><td>创建一个新 Host 草稿。</td></tr>
                   <tr><td>删除连接</td><td>删除当前选中的连接。</td></tr>
-                  <tr><td>终端工具</td><td>选择用 Terminal 或 iTerm 发起连接。</td></tr>
+                  <tr><td>终端工具</td><td>固定使用系统 Terminal 发起连接。</td></tr>
                   <tr><td>终端连接</td><td>对当前选中 Host 发起 <code>ssh &lt;alias&gt;</code>。</td></tr>
                 </table>
               </section>
@@ -1273,7 +1209,7 @@ final class AppModel: ObservableObject {
                   <tr><td>Save To SSH Config</td><td>Persist current in-memory hosts to <code>~/.ssh/config</code> and <code>~/.ssh/config.d/*.conf</code>.</td></tr>
                   <tr><td>Add Connection</td><td>Create a new host draft.</td></tr>
                   <tr><td>Delete Connection</td><td>Delete selected host.</td></tr>
-                  <tr><td>Terminal App</td><td>Choose Terminal or iTerm.</td></tr>
+                  <tr><td>Terminal App</td><td>Always uses system Terminal.</td></tr>
                   <tr><td>Connect in Terminal</td><td>Launch <code>ssh &lt;alias&gt;</code> for selected host.</td></tr>
                 </table>
               </section>
@@ -2002,12 +1938,8 @@ struct SettingsTabView: View {
                     HStack {
                         Text(model.t(.terminalApp))
                             .frame(width: 120, alignment: .leading)
-                        Picker(model.t(.terminalApp), selection: $model.selectedTerminalApp) {
-                            ForEach(TerminalApp.allCases) { app in
-                                Text(app.displayName).tag(app)
-                            }
-                        }
-                        .pickerStyle(.menu)
+                        Text("Terminal")
+                            .foregroundStyle(.secondary)
                     }
 
                     HStack {
