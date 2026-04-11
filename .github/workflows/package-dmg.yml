@@ -73,7 +73,9 @@ jobs:
           set -euo pipefail
 
           RUN_URL="https://github.com/${REPO}/actions/runs/${RUN_ID}"
+          REPO_URL="https://github.com/${REPO}"
           ARTIFACT_URL="${RUN_URL}#artifacts"
+          DOWNLOAD_URL="${ARTIFACT_URL}"
           SHORT_SHA="${SHA:0:7}"
 
           if [ "${JOB_STATUS}" = "success" ]; then
@@ -103,7 +105,7 @@ jobs:
                   "tag": "div",
                   "text": {
                     "tag": "lark_md",
-                    "content": "**仓库**: ${REPO}\\n**分支**: ${REF_NAME}\\n**版本**: ${VERSION}\\n**提交**: ${SHORT_SHA}\\n**公证**: ${NOTARIZE}"
+                    "content": "**仓库**: [${REPO}](${REPO_URL})\\n**分支**: ${REF_NAME}\\n**版本**: ${VERSION}\\n**提交**: ${SHORT_SHA}\\n**公证**: ${NOTARIZE}\\n**下载链接**: [点击下载构建产物](${DOWNLOAD_URL})"
                   }
                 },
                 {
@@ -122,9 +124,17 @@ jobs:
                       "tag": "button",
                       "text": {
                         "tag": "plain_text",
-                        "content": "查看构建产物"
+                        "content": "下载构建产物"
                       },
-                      "url": "${ARTIFACT_URL}"
+                      "url": "${DOWNLOAD_URL}"
+                    },
+                    {
+                      "tag": "button",
+                      "text": {
+                        "tag": "plain_text",
+                        "content": "打开 GitHub 仓库"
+                      },
+                      "url": "${REPO_URL}"
                     }
                   ]
                 }

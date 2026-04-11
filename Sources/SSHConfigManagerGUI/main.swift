@@ -103,14 +103,18 @@ enum UIKey {
     case confirmSave
     case cancel
     case rollbackLatest
+    case autoFixIncludes
     case rolledBackToBackup
     case rollbackFailed
+    case autoFixDone
+    case autoFixFailed
     case connectInTerminal
     case terminalApp
     case launchedTerminal
     case terminalLaunchFailed
     case appVersion
     case validateWarningsPrefix
+    case logs
 }
 
 struct L10n {
@@ -186,14 +190,18 @@ struct L10n {
         case .confirmSave: return zh ? "确认保存" : "Confirm Save"
         case .cancel: return zh ? "取消" : "Cancel"
         case .rollbackLatest: return zh ? "回滚到最近备份" : "Rollback Latest Backup"
+        case .autoFixIncludes: return zh ? "自动修复 Include 递归" : "Auto Fix Include Loop"
         case .rolledBackToBackup: return zh ? "已回滚到备份" : "Rolled back to backup"
         case .rollbackFailed: return zh ? "回滚失败" : "Rollback failed"
+        case .autoFixDone: return zh ? "已自动修复 Include 递归" : "Include recursion auto-fixed"
+        case .autoFixFailed: return zh ? "自动修复失败" : "Auto fix failed"
         case .connectInTerminal: return zh ? "终端连接" : "Connect in Terminal"
         case .terminalApp: return zh ? "终端工具" : "Terminal App"
         case .launchedTerminal: return zh ? "已在终端发起连接" : "Launched connection in terminal"
         case .terminalLaunchFailed: return zh ? "终端连接失败" : "Failed to launch terminal connection"
         case .appVersion: return zh ? "版本" : "Version"
         case .validateWarningsPrefix: return zh ? "发现风险" : "Validation warnings"
+        case .logs: return zh ? "日志" : "Logs"
         }
     }
 
@@ -637,6 +645,67 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func autoFixRecursiveIncludes() {
+        do {
+            let backupDir = store.backupDirectoryURL
+            if !fileManager.fileExists(atPath: backupDir.path) {
+                try fileManager.createDirectory(at: backupDir, withIntermediateDirectories: true)
+            }
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+            let stamp = formatter.string(from: Date())
+            var fixedFiles: [String] = []
+
+            let managedMain = [
+                "# Managed by SSH Config Manager (sshcm)",
+                "# This file is rewritten by the tool.",
+                "Include ~/.ssh/config.d/*.conf",
+                ""
+            ].joined(separator: "\n")
+
+            let mainURL = store.configFileURL
+            if fileManager.fileExists(atPath: mainURL.path) {
+                let oldMain = try String(contentsOf: mainURL, encoding: .utf8)
+                if oldMain != managedMain {
+                    let backup = backupDir.appendingPathComponent("config.\(stamp)-autofix.bak")
+                    try oldMain.write(to: backup, atomically: true, encoding: .utf8)
+                    try managedMain.write(to: mainURL, atomically: true, encoding: .utf8)
+                    fixedFiles.append(mainURL.lastPathComponent)
+                }
+            } else {
+                try managedMain.write(to: mainURL, atomically: true, encoding: .utf8)
+                fixedFiles.append(mainURL.lastPathComponent)
+            }
+
+            if fileManager.fileExists(atPath: store.configDirectoryURL.path) {
+                let confFiles = try fileManager.contentsOfDirectory(at: store.configDirectoryURL, includingPropertiesForKeys: nil)
+                    .filter { $0.pathExtension == "conf" }
+                    .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+                for conf in confFiles {
+                    let old = try String(contentsOf: conf, encoding: .utf8)
+                    let new = sanitizeRecursiveIncludeLines(in: old)
+                    if new != old {
+                        let backup = backupDir.appendingPathComponent("\(conf.lastPathComponent).\(stamp)-autofix.bak")
+                        try old.write(to: backup, atomically: true, encoding: .utf8)
+                        try new.write(to: conf, atomically: true, encoding: .utf8)
+                        fixedFiles.append(conf.lastPathComponent)
+                    }
+                }
+            }
+
+            load()
+            if fixedFiles.isEmpty {
+                statusMessage = "\(t(.autoFixDone)): no changes needed"
+            } else {
+                statusMessage = "\(t(.autoFixDone)): \(fixedFiles.joined(separator: ", "))"
+            }
+        } catch {
+            statusMessage = "\(t(.autoFixFailed)): \(error.localizedDescription)"
+        }
+    }
+
     func connectSelectedInTerminal() {
         guard let host = selectedHost else { return }
         do {
@@ -712,6 +781,25 @@ final class AppModel: ObservableObject {
     private func shellQuote(_ value: String) -> String {
         let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
         return "'\(escaped)'"
+    }
+
+    private func sanitizeRecursiveIncludeLines(in content: String) -> String {
+        let lines = content.components(separatedBy: .newlines)
+        let sanitized = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return true }
+            guard !trimmed.hasPrefix("#") else { return true }
+            guard trimmed.lowercased().hasPrefix("include ") else { return true }
+            let value = trimmed.dropFirst("Include".count).trimmingCharacters(in: .whitespaces).lowercased()
+            if value.contains("~/.ssh/config") || value.contains("/.ssh/config") {
+                return false
+            }
+            if value.contains("config.d/*.conf") {
+                return false
+            }
+            return true
+        }
+        return sanitized.joined(separator: "\n")
     }
 
     private func buildSavePlan(currentHosts: [SSHHostEntry], baselineHosts: [SSHHostEntry], globalDirectives: [SSHDirective]) -> SavePlan {
@@ -822,6 +910,7 @@ struct ContentView: View {
                     Button(model.t(.reload)) { model.load() }
                     Button(model.t(.saveConfig)) { model.prepareSave() }
                     Button(model.t(.rollbackLatest)) { model.rollbackLatestBackup() }
+                    Button(model.t(.autoFixIncludes)) { model.autoFixRecursiveIncludes() }
                     Button(model.t(.addHost)) { model.addHost() }
                     Button(model.t(.deleteHost)) { model.deleteSelectedHost() }
                         .disabled(model.selectedHost == nil)
@@ -957,14 +1046,17 @@ struct ConnectionsTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider()
-                HStack {
-                    Text(model.statusMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                GroupBox(model.t(.logs)) {
+                    HStack(alignment: .top) {
+                        Text(model.statusMessage.isEmpty ? "-" : model.statusMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                        Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
             }
@@ -1003,24 +1095,8 @@ struct HostEditorView: View {
             }
 
             HStack(spacing: 8) {
-                Picker(model.t(.terminalApp), selection: $model.selectedTerminalApp) {
-                    ForEach(TerminalApp.allCases) { app in
-                        Text(app.displayName).tag(app)
-                    }
-                }
-                .frame(width: 150)
-
-                Button(model.t(.connectInTerminal)) {
-                    model.connectSelectedInTerminal()
-                }
-                .disabled(model.selectedHost == nil)
-
-                Button(model.t(.rollbackLatest)) {
-                    model.rollbackLatestBackup()
-                }
-
-                Button(model.t(.saveConfig)) {
-                    model.prepareSave()
+                Button(model.t(.autoFixIncludes)) {
+                    model.autoFixRecursiveIncludes()
                 }
 
                 Spacer()
@@ -1297,9 +1373,13 @@ struct KeyToolsTabView: View {
             }
 
             Divider()
-            Text(model.statusMessage)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            GroupBox(model.t(.logs)) {
+                Text(model.statusMessage.isEmpty ? "-" : model.statusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
             Spacer()
         }
         .padding(16)

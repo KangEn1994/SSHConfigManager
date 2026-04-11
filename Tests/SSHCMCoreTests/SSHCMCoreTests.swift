@@ -158,6 +158,31 @@ final class SSHCMCoreTests: XCTestCase {
         XCTAssertTrue(globals.contains("ServerAliveInterval 30"))
     }
 
+    func testStoreFiltersMainConfigIncludeFromGlobalsToAvoidRecursion() throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sshDir = root.appendingPathComponent(".ssh", isDirectory: true)
+        try FileManager.default.createDirectory(at: sshDir, withIntermediateDirectories: true)
+
+        let store = SSHConfigStore(sshDirectory: sshDir)
+        let doc = SSHConfigDocument(
+            globalDirectives: [
+                SSHDirective(key: "Include", value: "~/.ssh/config"),
+                SSHDirective(key: "Include", value: "/tmp/another.conf"),
+            ],
+            hosts: [
+                SSHHostEntry(aliases: ["demo"], hostName: "demo.local", metadata: SSHHostMetadata(group: "test", tags: [], managed: true))
+            ]
+        )
+
+        _ = try store.save(document: doc)
+        let globalsURL = store.configDirectoryURL.appendingPathComponent("00-globals.conf")
+        let globals = try String(contentsOf: globalsURL, encoding: .utf8)
+
+        XCTAssertFalse(globals.contains("Include ~/.ssh/config"))
+        XCTAssertTrue(globals.contains("Include /tmp/another.conf"))
+    }
+
     func testFindHostsMatchesAliasThenTag() {
         let store = SSHConfigStore(sshDirectory: URL(fileURLWithPath: "/tmp/sshcm-test"))
         let hosts = [

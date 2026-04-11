@@ -199,11 +199,11 @@ public final class SSHConfigStore {
             if directive.key.caseInsensitiveCompare("Include") != .orderedSame {
                 return true
             }
-            return !isManagedIncludePath(directive.value)
+            return !isRecursiveIncludePath(directive.value)
         }
     }
 
-    private func isManagedIncludePath(_ value: String) -> Bool {
+    private func isRecursiveIncludePath(_ value: String) -> Bool {
         let tokens = value
             .split(whereSeparator: { $0.isWhitespace })
             .map(String.init)
@@ -211,7 +211,12 @@ public final class SSHConfigStore {
         guard !tokens.isEmpty else { return false }
 
         let managedDirectory = configDirectoryURL.standardizedFileURL.path
+        let mainConfigPath = configFileURL.standardizedFileURL.path
         for token in tokens {
+            let tokenLower = token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if tokenLower == "~/.ssh/config" || tokenLower.hasSuffix("/.ssh/config") {
+                return true
+            }
             let expanded = expandPath(token)
             let fileURL = URL(fileURLWithPath: expanded)
             let includeDirectory: URL
@@ -225,6 +230,9 @@ public final class SSHConfigStore {
             }
 
             if includeDirectory.standardizedFileURL.path == managedDirectory {
+                return true
+            }
+            if fileURL.standardizedFileURL.path == mainConfigPath {
                 return true
             }
         }
