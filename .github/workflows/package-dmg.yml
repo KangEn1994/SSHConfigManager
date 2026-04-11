@@ -13,7 +13,7 @@ jobs:
       contents: read
     env:
       APP_NAME: ${{ vars.APP_NAME != '' && vars.APP_NAME || 'SSHConfigManagerGUI' }}
-      VERSION: ${{ vars.VERSION != '' && vars.VERSION || '0.1.1' }}
+      VERSION: ${{ vars.VERSION != '' && vars.VERSION || '0.1.2' }}
       PRODUCT_NAME: ${{ vars.PRODUCT_NAME != '' && vars.PRODUCT_NAME || 'SSH Config Manager' }}
       BUNDLE_ID: ${{ vars.BUNDLE_ID != '' && vars.BUNDLE_ID || 'dev.sshconfigmanager.gui' }}
       MIN_MACOS_VERSION: ${{ vars.MIN_MACOS_VERSION != '' && vars.MIN_MACOS_VERSION || '14.0' }}

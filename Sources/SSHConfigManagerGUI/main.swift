@@ -132,6 +132,12 @@ enum UIKey {
     case logsCopy
     case logsCopied
     case logsEmpty
+    case keyAlias
+    case keyGroup
+    case saveKeyMeta
+    case keyMetaSaved
+    case keyMetaSaveFailed
+    case keyMetaLoadFailed
 }
 
 struct L10n {
@@ -236,6 +242,12 @@ struct L10n {
         case .logsCopy: return zh ? "复制日志" : "Copy Logs"
         case .logsCopied: return zh ? "日志已复制" : "Logs copied"
         case .logsEmpty: return zh ? "暂无日志" : "No logs yet"
+        case .keyAlias: return zh ? "别名" : "Alias"
+        case .keyGroup: return zh ? "分组" : "Group"
+        case .saveKeyMeta: return zh ? "保存密钥信息" : "Save Key Info"
+        case .keyMetaSaved: return zh ? "密钥信息已保存" : "Key metadata saved"
+        case .keyMetaSaveFailed: return zh ? "密钥信息保存失败" : "Failed to save key metadata"
+        case .keyMetaLoadFailed: return zh ? "密钥信息加载失败" : "Failed to load key metadata"
         }
     }
 
@@ -275,10 +287,16 @@ struct IdentityOption: Identifiable, Hashable {
 }
 
 struct SavePlan {
-    var changes: [String]
     var warnings: [String]
-    var beforePreviewText: String
-    var afterPreviewText: String
+    var beforeBlocks: [HostPreviewBlock]
+    var afterBlocks: [HostPreviewBlock]
+}
+
+struct HostPreviewBlock: Identifiable, Hashable {
+    let id = UUID()
+    var alias: String
+    var text: String
+    var changed: Bool
 }
 
 struct LogEntry: Identifiable, Hashable {
@@ -291,6 +309,16 @@ struct LogEntry: Identifiable, Hashable {
     let date: Date
     let level: Level
     let message: String
+}
+
+struct KeyMetadata: Codable, Hashable {
+    var alias: String
+    var group: String
+
+    init(alias: String = "", group: String = "default") {
+        self.alias = alias
+        self.group = group
+    }
 }
 
 struct HostDraft: Equatable {
@@ -455,6 +483,7 @@ final class AppModel: ObservableObject {
     @Published var hostSearchQuery = ""
 
     @Published var keyItems: [SSHLocalKey] = []
+    @Published var keyMetadataByName: [String: KeyMetadata] = [:]
     @Published var generateName = "id_ed25519_sshcm"
     @Published var generateType = "ed25519"
     @Published var importPath = ""
@@ -472,6 +501,7 @@ final class AppModel: ObservableObject {
     private let processRunner = ProcessRunner()
     private let fileManager = FileManager.default
     private let recentConnectionsKey = "sshcm.recentConnections"
+    private let keyMetadataFileName = "key-metadata.json"
 
     var groupedHosts: [(String, [SSHHostEntry])] {
         let query = hostSearchQuery.trimmed.lowercased()
@@ -589,8 +619,26 @@ final class AppModel: ObservableObject {
         recentConnections = Array(normalized.prefix(8))
     }
 
+    private func keyMetadataFileURL() throws -> URL {
+        let appSupportBase = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let appSupportDir = appSupportBase.appendingPathComponent("SSHConfigManager", isDirectory: true)
+        if !fileManager.fileExists(atPath: appSupportDir.path) {
+            try fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+        }
+        return appSupportDir.appendingPathComponent(keyMetadataFileName)
+    }
+
+    private func syncKeyMetadataWithCurrentKeys() {
+        let names = Set(keyItems.map { $0.name })
+        keyMetadataByName = keyMetadataByName.filter { names.contains($0.key) }
+        for name in names where keyMetadataByName[name] == nil {
+            keyMetadataByName[name] = KeyMetadata()
+        }
+    }
+
     func load() {
         do {
+            loadKeyMetadata(silent: true)
             let loaded = try store.loadDocument()
             document = loaded
             hosts = loaded.hosts
@@ -717,12 +765,69 @@ final class AppModel: ObservableObject {
     func refreshKeys(silent: Bool = false) {
         do {
             keyItems = try keyManager.listLocalKeys()
+            syncKeyMetadataWithCurrentKeys()
             if !silent {
                 setInfo("\(t(.currentKeys)): \(keyItems.count)")
             }
         } catch {
             if !silent {
                 setError("\(t(.keysLoadFailed)): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func updateKeyMetadata(name: String, alias: String? = nil, group: String? = nil) {
+        var current = keyMetadataByName[name] ?? KeyMetadata()
+        if let alias {
+            current.alias = alias
+        }
+        if let group {
+            current.group = group.trimmed.isEmpty ? "default" : group
+        }
+        keyMetadataByName[name] = current
+    }
+
+    func keyMetadata(for name: String) -> KeyMetadata {
+        keyMetadataByName[name] ?? KeyMetadata()
+    }
+
+    func keyDisplayTitle(for key: SSHLocalKey) -> String {
+        let meta = keyMetadata(for: key.name)
+        let alias = meta.alias.trimmed
+        let group = meta.group.trimmed
+        if alias.isEmpty {
+            return key.name
+        }
+        return "\(alias) [\(group.isEmpty ? "default" : group)] · \(key.name)"
+    }
+
+    func saveKeyMetadata() {
+        do {
+            let url = try keyMetadataFileURL()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(keyMetadataByName)
+            try data.write(to: url, options: [.atomic])
+            setInfo(t(.keyMetaSaved))
+        } catch {
+            setError("\(t(.keyMetaSaveFailed)): \(error.localizedDescription)")
+        }
+    }
+
+    func loadKeyMetadata(silent: Bool = false) {
+        do {
+            let url = try keyMetadataFileURL()
+            guard fileManager.fileExists(atPath: url.path) else {
+                keyMetadataByName = [:]
+                return
+            }
+            let data = try Data(contentsOf: url)
+            let decoded = try JSONDecoder().decode([String: KeyMetadata].self, from: data)
+            keyMetadataByName = decoded
+        } catch {
+            keyMetadataByName = [:]
+            if !silent {
+                setError("\(t(.keyMetaLoadFailed)): \(error.localizedDescription)")
             }
         }
     }
@@ -1189,68 +1294,34 @@ final class AppModel: ObservableObject {
     }
 
     private func buildSavePlan(currentHosts: [SSHHostEntry], baselineHosts: [SSHHostEntry], globalDirectives: [SSHDirective]) -> SavePlan {
-        var changes: [String] = []
         let baselineMap = Dictionary(uniqueKeysWithValues: baselineHosts.map { ($0.id, $0) })
-        let currentMap = Dictionary(uniqueKeysWithValues: currentHosts.map { ($0.id, $0) })
-
-        for host in currentHosts where baselineMap[host.id] == nil {
-            changes.append("+ \(host.primaryAlias) [\(host.metadata.group)]")
-        }
-        for host in baselineHosts where currentMap[host.id] == nil {
-            changes.append("- \(host.primaryAlias) [\(host.metadata.group)]")
-        }
-        for host in currentHosts {
-            guard let old = baselineMap[host.id], old != host else { continue }
-            changes.append("~ \(host.primaryAlias): \(diffSummary(old: old, new: host))")
-        }
-        if changes.isEmpty {
-            changes = [t(.noChangesDetected)]
-        }
+        let changedIDs = Set(currentHosts.compactMap { host -> UUID? in
+            guard let old = baselineMap[host.id] else { return host.id }
+            return old == host ? nil : host.id
+        })
 
         let warnings = validate(hosts: currentHosts, globalDirectives: globalDirectives)
-        let beforePreview = baselineHosts
+        let beforeBlocks = baselineHosts
             .sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
-            .map { host in
-                """
-                Host \(host.aliases.joined(separator: " "))
-                  HostName \(host.hostName)
-                  User \(host.user ?? "-")
-                  Group \(host.metadata.group)
-                  ProxyJump \(host.proxyJump ?? "-")
-                  ProxyCommand \(host.proxyCommand ?? "-")
-                """
-            }
-            .joined(separator: "\n\n")
+            .map { host in previewBlock(for: host, changed: false) }
 
-        let afterPreview = currentHosts
+        let afterBlocks = currentHosts
             .sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
-            .map { host in
-                """
-                Host \(host.aliases.joined(separator: " "))
-                  HostName \(host.hostName)
-                  User \(host.user ?? "-")
-                  Group \(host.metadata.group)
-                  ProxyJump \(host.proxyJump ?? "-")
-                  ProxyCommand \(host.proxyCommand ?? "-")
-                """
-            }
-            .joined(separator: "\n\n")
-        return SavePlan(changes: changes, warnings: warnings, beforePreviewText: beforePreview, afterPreviewText: afterPreview)
+            .map { host in previewBlock(for: host, changed: changedIDs.contains(host.id)) }
+
+        return SavePlan(warnings: warnings, beforeBlocks: beforeBlocks, afterBlocks: afterBlocks)
     }
 
-    private func diffSummary(old: SSHHostEntry, new: SSHHostEntry) -> String {
-        var fields: [String] = []
-        if old.hostName != new.hostName { fields.append("HostName") }
-        if old.user != new.user { fields.append("User") }
-        if old.port != new.port { fields.append("Port") }
-        if old.identityFile != new.identityFile { fields.append("IdentityFile") }
-        if old.proxyJump != new.proxyJump { fields.append("ProxyJump") }
-        if old.proxyCommand != new.proxyCommand { fields.append("ProxyCommand") }
-        if old.metadata.group != new.metadata.group { fields.append("Group") }
-        if old.metadata.tags != new.metadata.tags { fields.append("Tags") }
-        if old.forwards != new.forwards { fields.append("Forwards") }
-        if old.aliases != new.aliases { fields.append("Aliases") }
-        return fields.isEmpty ? "details updated" : fields.joined(separator: ", ")
+    private func previewBlock(for host: SSHHostEntry, changed: Bool) -> HostPreviewBlock {
+        let text = """
+        Host \(host.aliases.joined(separator: " "))
+          HostName \(host.hostName)
+          User \(host.user ?? "-")
+          Group \(host.metadata.group)
+          ProxyJump \(host.proxyJump ?? "-")
+          ProxyCommand \(host.proxyCommand ?? "-")
+        """
+        return HostPreviewBlock(alias: host.primaryAlias, text: text, changed: changed)
     }
 
     private func validate(hosts: [SSHHostEntry], globalDirectives: [SSHDirective]) -> [String] {
@@ -1365,19 +1436,6 @@ struct SavePreviewSheet: View {
                 .font(.headline)
 
             if let plan = model.pendingSavePlan {
-                GroupBox(model.t(.savePreviewChanges)) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(plan.changes, id: \.self) { line in
-                                Text(line)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(minHeight: 120)
-                }
-
                 GroupBox(model.t(.savePreviewWarnings)) {
                     if plan.warnings.isEmpty {
                         Text("None")
@@ -1400,19 +1458,49 @@ struct SavePreviewSheet: View {
                 HStack(alignment: .top, spacing: 10) {
                     GroupBox(model.t(.savePreviewBefore)) {
                         ScrollView {
-                            Text(plan.beforePreviewText.isEmpty ? model.t(.noChangesDetected) : plan.beforePreviewText)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 8) {
+                                if plan.beforeBlocks.isEmpty {
+                                    Text(model.t(.noChangesDetected))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(plan.beforeBlocks) { block in
+                                        Text(block.text)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(8)
+                                            .background(Color.secondary.opacity(0.06))
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
 
                     GroupBox(model.t(.savePreviewAfter)) {
                         ScrollView {
-                            Text(plan.afterPreviewText.isEmpty ? model.t(.noChangesDetected) : plan.afterPreviewText)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 8) {
+                                if plan.afterBlocks.isEmpty {
+                                    Text(model.t(.noChangesDetected))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(plan.afterBlocks) { block in
+                                        Text(block.text)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(8)
+                                            .background(block.changed ? Color.green.opacity(0.2) : Color.secondary.opacity(0.06))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(block.changed ? Color.green.opacity(0.55) : Color.clear, lineWidth: 1)
+                                            )
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
@@ -1719,7 +1807,7 @@ struct HostEditorView: View {
             .compactMap { key -> IdentityOption? in
                 guard let privatePath = key.privateKeyPath else { return nil }
                 let displayPath = toTildePath(privatePath)
-                let label = "\(key.name) (\(displayPath))"
+                let label = "\(model.keyDisplayTitle(for: key)) (\(displayPath))"
                 return IdentityOption(label: label, value: displayPath)
             }
             .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
@@ -1842,6 +1930,7 @@ struct KeyToolsTabView: View {
             HStack {
                 Button(model.t(.doctorKeys)) { model.doctorKeys() }
                 Button(model.t(.refreshKeys)) { model.refreshKeys() }
+                Button(model.t(.saveKeyMeta)) { model.saveKeyMetadata() }
                 Spacer()
             }
 
@@ -1854,9 +1943,23 @@ struct KeyToolsTabView: View {
                     .foregroundStyle(.secondary)
             } else {
                 List(model.keyItems) { key in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(key.name)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(model.keyDisplayTitle(for: key))
                             .font(.headline)
+                        HStack {
+                            Text(model.t(.keyAlias))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 54, alignment: .leading)
+                            TextField(model.t(.keyAlias), text: keyAliasBinding(for: key))
+                        }
+                        HStack {
+                            Text(model.t(.keyGroup))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 54, alignment: .leading)
+                            TextField(model.t(.keyGroup), text: keyGroupBinding(for: key))
+                        }
                         if let privatePath = key.privateKeyPath {
                             Text("\(model.t(.privateKeyPath)): \(privatePath)")
                                 .font(.caption)
@@ -1886,5 +1989,19 @@ struct KeyToolsTabView: View {
         .onAppear {
             model.refreshKeys(silent: true)
         }
+    }
+
+    private func keyAliasBinding(for key: SSHLocalKey) -> Binding<String> {
+        Binding(
+            get: { model.keyMetadata(for: key.name).alias },
+            set: { model.updateKeyMetadata(name: key.name, alias: $0) }
+        )
+    }
+
+    private func keyGroupBinding(for key: SSHLocalKey) -> Binding<String> {
+        Binding(
+            get: { model.keyMetadata(for: key.name).group },
+            set: { model.updateKeyMetadata(name: key.name, group: $0) }
+        )
     }
 }
