@@ -115,6 +115,10 @@ enum UIKey {
     case appVersion
     case validateWarningsPrefix
     case logs
+    case toolsMenu
+    case usageGuide
+    case guideOpened
+    case guideOpenFailed
 }
 
 struct L10n {
@@ -202,6 +206,10 @@ struct L10n {
         case .appVersion: return zh ? "版本" : "Version"
         case .validateWarningsPrefix: return zh ? "发现风险" : "Validation warnings"
         case .logs: return zh ? "日志" : "Logs"
+        case .toolsMenu: return zh ? "工具" : "Tools"
+        case .usageGuide: return zh ? "使用说明" : "User Guide"
+        case .guideOpened: return zh ? "已打开使用说明" : "User guide opened"
+        case .guideOpenFailed: return zh ? "打开使用说明失败" : "Failed to open user guide"
         }
     }
 
@@ -706,6 +714,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func openUsageGuide() {
+        do {
+            let appSupportBase = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let appSupportDir = appSupportBase.appendingPathComponent("SSHConfigManager", isDirectory: true)
+            if !fileManager.fileExists(atPath: appSupportDir.path) {
+                try fileManager.createDirectory(at: appSupportDir, withIntermediateDirectories: true)
+            }
+            let guideURL = appSupportDir.appendingPathComponent("usage-guide.html")
+            let content = usageGuideHTML()
+            try content.write(to: guideURL, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.open(guideURL)
+            statusMessage = "\(t(.guideOpened)): \(guideURL.path)"
+        } catch {
+            statusMessage = "\(t(.guideOpenFailed)): \(error.localizedDescription)"
+        }
+    }
+
     func connectSelectedInTerminal() {
         guard let host = selectedHost else { return }
         do {
@@ -718,16 +743,7 @@ final class AppModel: ObservableObject {
             // Validate host alias against local ssh config first, so we can fail fast in GUI.
             _ = try processRunner.run(executable: "/usr/bin/ssh", arguments: ["-G", alias], allowNonZeroExit: false)
 
-            let command = """
-            echo "=== SSH Config Manager ==="
-            echo "Connecting: \(alias)"
-            echo "Terminal: \(selectedTerminalApp.displayName)"
-            echo
-            /usr/bin/ssh \(shellQuote(alias))
-            code=$?
-            echo
-            echo "ssh exited with status $code"
-            """
+            let command = "/usr/bin/ssh \(shellQuote(alias))"
             try launchTerminal(command: command, terminal: selectedTerminalApp)
             statusMessage = "\(t(.launchedTerminal)): \(alias) (\(selectedTerminalApp.displayName))"
         } catch {
@@ -767,11 +783,16 @@ final class AppModel: ObservableObject {
             tell application "iTerm"
                 activate
                 if (count of windows) = 0 then
-                    create window with default profile
+                    set newWindow to (create window with default profile)
+                    delay 0.1
+                    tell current session of newWindow
+                        write text "\(escaped)"
+                    end tell
+                else
+                    tell current session of current window
+                        write text "\(escaped)"
+                    end tell
                 end if
-                tell current session of current window
-                    write text "\(escaped)"
-                end tell
             end tell
             """
         }
@@ -800,6 +821,242 @@ final class AppModel: ObservableObject {
             return true
         }
         return sanitized.joined(separator: "\n")
+    }
+
+    private func usageGuideHTML() -> String {
+        """
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>SSH Config Manager - User Guide</title>
+          <style>
+            :root { --bg:#f7f8fb; --card:#fff; --text:#20242c; --muted:#5f6775; --line:#e2e6ef; --accent:#2563eb; }
+            * { box-sizing: border-box; }
+            body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+            .wrap { max-width: 1080px; margin: 24px auto; padding: 0 16px 48px; }
+            .head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:16px; }
+            .title { margin:0; font-size:28px; }
+            .lang { display:flex; gap:8px; }
+            .lang button { border:1px solid var(--line); background:#fff; padding:8px 12px; border-radius:8px; cursor:pointer; }
+            .lang button.active { border-color: var(--accent); color: var(--accent); font-weight:600; }
+            .grid { display:grid; gap:14px; }
+            .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+            h2 { margin:0 0 10px; font-size:18px; }
+            h3 { margin:10px 0 8px; font-size:15px; }
+            p, li { line-height:1.55; }
+            .muted { color:var(--muted); }
+            table { width:100%; border-collapse: collapse; margin-top:8px; }
+            th, td { border:1px solid var(--line); text-align:left; padding:8px 10px; vertical-align:top; }
+            th { background:#f3f5fa; font-weight:600; }
+            code { background:#f2f4f8; padding:1px 6px; border-radius:6px; }
+            .lang-block { display:none; }
+            .lang-block.active { display:block; }
+          </style>
+        </head>
+        <body>
+          <div class="wrap">
+            <div class="head">
+              <h1 class="title">SSH Config Manager</h1>
+              <div class="lang">
+                <button id="zhBtn" class="active" onclick="switchLang('zh')">中文</button>
+                <button id="enBtn" onclick="switchLang('en')">English</button>
+              </div>
+            </div>
+
+            <div id="zh" class="lang-block active grid">
+              <section class="card">
+                <h2>概览</h2>
+                <p>本工具用于可视化管理本机 <code>~/.ssh/config</code>，并托管到 <code>~/.ssh/config.d/*.conf</code>。保存时会先备份，再原子写入。</p>
+                <p class="muted">提示：连接流程是“两阶段”——先“保存连接变更”（写入内存），再“保存到 SSH 配置”（写入磁盘）。</p>
+              </section>
+
+              <section class="card">
+                <h2>顶部按钮说明（连接管理页）</h2>
+                <table>
+                  <tr><th>按钮</th><th>作用</th></tr>
+                  <tr><td>工具 ▾</td><td>下拉菜单，包含：重新加载、回滚到最近备份、自动修复 Include 递归、使用说明。</td></tr>
+                  <tr><td>保存到 SSH 配置</td><td>把当前内存中的连接配置正式写入 <code>~/.ssh/config</code> 和 <code>~/.ssh/config.d/*.conf</code>。</td></tr>
+                  <tr><td>新增连接</td><td>创建一个新 Host 草稿。</td></tr>
+                  <tr><td>删除连接</td><td>删除当前选中的连接。</td></tr>
+                  <tr><td>终端工具</td><td>选择用 Terminal 或 iTerm 发起连接。</td></tr>
+                  <tr><td>终端连接</td><td>对当前选中 Host 发起 <code>ssh &lt;alias&gt;</code>。</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>工具菜单说明</h2>
+                <table>
+                  <tr><th>菜单项</th><th>作用</th></tr>
+                  <tr><td>重新加载</td><td>从磁盘重新读取 SSH 配置。</td></tr>
+                  <tr><td>回滚到最近备份</td><td>把最近一次备份恢复为当前主配置，然后自动刷新界面。</td></tr>
+                  <tr><td>自动修复 Include 递归</td><td>自动修复 <code>Too many recursive configuration includes</code>。会改写主配置入口，并清理分片中的递归 Include，修复前会备份。</td></tr>
+                  <tr><td>使用说明</td><td>打开本地 HTML 使用文档。</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>连接配置字段</h2>
+                <table>
+                  <tr><th>字段</th><th>说明</th></tr>
+                  <tr><td>Alias</td><td>连接别名，可填多个（空格分隔）。</td></tr>
+                  <tr><td>HostName</td><td>远端主机名或 IP。</td></tr>
+                  <tr><td>User</td><td>SSH 登录用户。</td></tr>
+                  <tr><td>Port</td><td>SSH 端口。</td></tr>
+                  <tr><td>IdentityFile</td><td>私钥路径，下拉来源于密钥管理中的 <code>id_*</code> 密钥。</td></tr>
+                  <tr><td>ProxyJump</td><td>跳板链，如 <code>bastion1,bastion2</code>。</td></tr>
+                  <tr><td>ProxyCommand</td><td>代理命令，如 <code>ssh proxy -W %h:%p 2&gt;/dev/null</code>。</td></tr>
+                  <tr><td>分组(Group)</td><td>用于归类和分片文件命名。</td></tr>
+                  <tr><td>Tags</td><td>标签，逗号分隔。</td></tr>
+                  <tr><td>端口转发</td><td>支持 Local/Remote/Dynamic 三类。</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>连接编辑按钮</h2>
+                <table>
+                  <tr><th>按钮</th><th>作用</th></tr>
+                  <tr><td>保存连接变更</td><td>把当前编辑内容提交到内存中的连接列表（不落盘）。</td></tr>
+                  <tr><td>撤销未保存修改</td><td>恢复到上一次“保存连接变更”后的状态。</td></tr>
+                  <tr><td>+ 本地 / + 远程 / + 动态</td><td>新增端口转发行。</td></tr>
+                  <tr><td>移除</td><td>删除当前端口转发规则。</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>保存预览弹窗</h2>
+                <ul>
+                  <li><b>变更内容(Changes)</b>：新增/删除/修改的主机摘要。</li>
+                  <li><b>风险提示(Warnings)</b>：重复别名、空字段、ProxyJump 与 ProxyCommand 冲突等。</li>
+                  <li><b>Config Preview</b>：保存后的关键配置预览。</li>
+                </ul>
+              </section>
+
+              <section class="card">
+                <h2>密钥管理页</h2>
+                <table>
+                  <tr><th>项</th><th>说明</th></tr>
+                  <tr><td>密钥名 / 类型 / 生成</td><td>生成新密钥（默认 ed25519）。</td></tr>
+                  <tr><td>导入私钥路径 / 导入</td><td>导入已有私钥到 <code>~/.ssh</code>。</td></tr>
+                  <tr><td>加入 ssh-agent</td><td>连接后自动将密钥加入 agent。</td></tr>
+                  <tr><td>使用 macOS Keychain</td><td>通过系统钥匙串保存口令。</td></tr>
+                  <tr><td>修复/巡检密钥</td><td>修复权限并检测 agent 状态。</td></tr>
+                  <tr><td>刷新密钥列表</td><td>重新扫描本地密钥（仅展示 <code>id_*</code>）。</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>日志面板</h2>
+                <p>页面底部“日志”会显示最近一次操作结果。遇到问题时，先看日志里的错误详情，再决定是否执行“自动修复 Include 递归”或“回滚到最近备份”。</p>
+              </section>
+            </div>
+
+            <div id="en" class="lang-block grid">
+              <section class="card">
+                <h2>Overview</h2>
+                <p>This tool manages local <code>~/.ssh/config</code> visually and writes managed fragments into <code>~/.ssh/config.d/*.conf</code>. Saving uses backup + atomic write.</p>
+                <p class="muted">Connection editing is two-stage: “Save Connection Changes” (in-memory) then “Save To SSH Config” (persist to disk).</p>
+              </section>
+
+              <section class="card">
+                <h2>Top Toolbar (Connections Tab)</h2>
+                <table>
+                  <tr><th>Button</th><th>Purpose</th></tr>
+                  <tr><td>Tools ▾</td><td>Dropdown with Reload, Rollback Latest Backup, Auto Fix Include Loop, User Guide.</td></tr>
+                  <tr><td>Save To SSH Config</td><td>Persist current in-memory hosts to <code>~/.ssh/config</code> and <code>~/.ssh/config.d/*.conf</code>.</td></tr>
+                  <tr><td>Add Connection</td><td>Create a new host draft.</td></tr>
+                  <tr><td>Delete Connection</td><td>Delete selected host.</td></tr>
+                  <tr><td>Terminal App</td><td>Choose Terminal or iTerm.</td></tr>
+                  <tr><td>Connect in Terminal</td><td>Launch <code>ssh &lt;alias&gt;</code> for selected host.</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>Tools Menu</h2>
+                <table>
+                  <tr><th>Item</th><th>Purpose</th></tr>
+                  <tr><td>Reload</td><td>Reload config from disk.</td></tr>
+                  <tr><td>Rollback Latest Backup</td><td>Restore latest backup as main config and refresh UI.</td></tr>
+                  <tr><td>Auto Fix Include Loop</td><td>Fix <code>Too many recursive configuration includes</code> by resetting main include entry and removing recursive includes in fragments (with backup).</td></tr>
+                  <tr><td>User Guide</td><td>Open this local HTML guide.</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>Connection Fields</h2>
+                <table>
+                  <tr><th>Field</th><th>Description</th></tr>
+                  <tr><td>Alias</td><td>Host aliases (space-separated).</td></tr>
+                  <tr><td>HostName</td><td>Remote hostname or IP.</td></tr>
+                  <tr><td>User</td><td>SSH username.</td></tr>
+                  <tr><td>Port</td><td>SSH port.</td></tr>
+                  <tr><td>IdentityFile</td><td>Private key path from key list (<code>id_*</code>).</td></tr>
+                  <tr><td>ProxyJump</td><td>Bastion chain, e.g. <code>bastion1,bastion2</code>.</td></tr>
+                  <tr><td>ProxyCommand</td><td>Custom proxy command.</td></tr>
+                  <tr><td>Group</td><td>Manual grouping used for sharding.</td></tr>
+                  <tr><td>Tags</td><td>Comma-separated tags.</td></tr>
+                  <tr><td>Port Forwards</td><td>Local / Remote / Dynamic forward rules.</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>Editor Actions</h2>
+                <table>
+                  <tr><th>Button</th><th>Purpose</th></tr>
+                  <tr><td>Save Connection Changes</td><td>Apply current edits into in-memory host list (not persisted yet).</td></tr>
+                  <tr><td>Revert Unsaved Changes</td><td>Restore editor to last saved draft state.</td></tr>
+                  <tr><td>+ Local / + Remote / + Dynamic</td><td>Add a new forward rule row.</td></tr>
+                  <tr><td>Remove</td><td>Remove one forward rule.</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>Save Preview Dialog</h2>
+                <ul>
+                  <li><b>Changes</b>: host-level add/remove/update summary.</li>
+                  <li><b>Warnings</b>: duplicate aliases, empty fields, jump/command conflicts, etc.</li>
+                  <li><b>Config Preview</b>: preview snippet before write.</li>
+                </ul>
+              </section>
+
+              <section class="card">
+                <h2>Key Management Tab</h2>
+                <table>
+                  <tr><th>Item</th><th>Description</th></tr>
+                  <tr><td>Key name / Type / Generate</td><td>Create a new key pair (default: ed25519).</td></tr>
+                  <tr><td>Import private key path / Import</td><td>Import existing private key into <code>~/.ssh</code>.</td></tr>
+                  <tr><td>Add to ssh-agent</td><td>Add key to running ssh-agent.</td></tr>
+                  <tr><td>Use macOS Keychain</td><td>Use system keychain integration.</td></tr>
+                  <tr><td>Doctor Keys</td><td>Fix permissions and check agent health.</td></tr>
+                  <tr><td>Refresh Keys</td><td>Rescan local keys (only <code>id_*</code> shown).</td></tr>
+                </table>
+              </section>
+
+              <section class="card">
+                <h2>Logs Panel</h2>
+                <p>The bottom “Logs” panel shows latest action result. Check it first when something fails, then decide whether to run Auto Fix Include Loop or Rollback Latest Backup.</p>
+              </section>
+            </div>
+          </div>
+
+          <script>
+            function switchLang(lang) {
+              const zh = document.getElementById('zh');
+              const en = document.getElementById('en');
+              const zhBtn = document.getElementById('zhBtn');
+              const enBtn = document.getElementById('enBtn');
+              const useZh = lang === 'zh';
+              zh.classList.toggle('active', useZh);
+              en.classList.toggle('active', !useZh);
+              zhBtn.classList.toggle('active', useZh);
+              enBtn.classList.toggle('active', !useZh);
+              document.documentElement.lang = useZh ? 'zh-CN' : 'en';
+            }
+          </script>
+        </body>
+        </html>
+        """
     }
 
     private func buildSavePlan(currentHosts: [SSHHostEntry], baselineHosts: [SSHHostEntry], globalDirectives: [SSHDirective]) -> SavePlan {
@@ -907,10 +1164,14 @@ struct ContentView: View {
 
             if model.selectedTab == .connections {
                 ToolbarItemGroup {
-                    Button(model.t(.reload)) { model.load() }
+                    Menu(model.t(.toolsMenu)) {
+                        Button(model.t(.reload)) { model.load() }
+                        Button(model.t(.rollbackLatest)) { model.rollbackLatestBackup() }
+                        Button(model.t(.autoFixIncludes)) { model.autoFixRecursiveIncludes() }
+                        Divider()
+                        Button(model.t(.usageGuide)) { model.openUsageGuide() }
+                    }
                     Button(model.t(.saveConfig)) { model.prepareSave() }
-                    Button(model.t(.rollbackLatest)) { model.rollbackLatestBackup() }
-                    Button(model.t(.autoFixIncludes)) { model.autoFixRecursiveIncludes() }
                     Button(model.t(.addHost)) { model.addHost() }
                     Button(model.t(.deleteHost)) { model.deleteSelectedHost() }
                         .disabled(model.selectedHost == nil)
@@ -1092,17 +1353,6 @@ struct HostEditorView: View {
                     reloadFromModel()
                 }
                 .disabled(!localDirty)
-            }
-
-            HStack(spacing: 8) {
-                Button(model.t(.autoFixIncludes)) {
-                    model.autoFixRecursiveIncludes()
-                }
-
-                Spacer()
-                Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
