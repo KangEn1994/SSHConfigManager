@@ -8,6 +8,7 @@ enum AppTab: Hashable {
     case connections
     case keys
     case logs
+    case settings
 }
 
 enum TerminalApp: String, CaseIterable, Identifiable {
@@ -38,6 +39,7 @@ enum UIKey {
     case tabConnections
     case tabKeys
     case tabLogs
+    case tabSettings
     case language
     case languageSystem
     case languageEnglish
@@ -141,6 +143,7 @@ enum UIKey {
     case keyMetaSaveFailed
     case keyMetaLoadFailed
     case viewLogs
+    case settingsTitle
 }
 
 struct L10n {
@@ -150,6 +153,7 @@ struct L10n {
         case .tabConnections: return zh ? "连接管理" : "Connections"
         case .tabKeys: return zh ? "密钥管理" : "Keys"
         case .tabLogs: return zh ? "日志信息" : "Logs"
+        case .tabSettings: return zh ? "配置" : "Settings"
         case .language: return zh ? "语言" : "Language"
         case .languageSystem: return zh ? "跟随系统" : "System"
         case .languageEnglish: return "English"
@@ -253,6 +257,7 @@ struct L10n {
         case .keyMetaSaveFailed: return zh ? "密钥信息保存失败" : "Failed to save key metadata"
         case .keyMetaLoadFailed: return zh ? "密钥信息加载失败" : "Failed to load key metadata"
         case .viewLogs: return zh ? "查看日志信息" : "View Logs"
+        case .settingsTitle: return zh ? "应用配置" : "App Settings"
         }
     }
 
@@ -1392,20 +1397,18 @@ struct ContentView: View {
             LogsTabView()
                 .tabItem { Text(model.t(.tabLogs)) }
                 .tag(AppTab.logs)
+
+            SettingsTabView()
+                .tabItem { Text(model.t(.tabSettings)) }
+                .tag(AppTab.settings)
         }
         .toolbar {
-            ToolbarItem(placement: .automatic) {
-                languagePicker
-            }
-
             if model.selectedTab == .connections {
                 ToolbarItemGroup {
                     Menu(model.t(.toolsMenu)) {
                         Button(model.t(.reload)) { model.load() }
                         Button(model.t(.rollbackLatest)) { model.rollbackLatestBackup() }
                         Button(model.t(.autoFixIncludes)) { model.autoFixRecursiveIncludes() }
-                        Divider()
-                        Button(model.t(.usageGuide)) { model.openUsageGuide() }
                     }
                     Button(model.t(.saveConfig)) { model.prepareSave() }
                     Button(model.t(.addHost)) { model.addHost() }
@@ -1414,22 +1417,9 @@ struct ContentView: View {
                 }
 
                 ToolbarItemGroup {
-                    Picker(model.t(.terminalApp), selection: $model.selectedTerminalApp) {
-                        ForEach(TerminalApp.allCases) { app in
-                            Text(app.displayName).tag(app)
-                        }
-                    }
-                    .pickerStyle(.menu)
-
                     Button(model.t(.connectInTerminal)) { model.connectSelectedInTerminal() }
                         .disabled(model.selectedHost == nil)
                 }
-            }
-
-            ToolbarItem(placement: .status) {
-                Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .sheet(isPresented: $model.showSavePreview) {
@@ -1439,14 +1429,6 @@ struct ContentView: View {
         }
     }
 
-    private var languagePicker: some View {
-        Picker(model.t(.language), selection: $model.language) {
-            ForEach(AppLanguage.allCases) { language in
-                Text(model.languageLabel(language)).tag(language)
-            }
-        }
-        .pickerStyle(.menu)
-    }
 }
 
 struct SavePreviewSheet: View {
@@ -1901,9 +1883,6 @@ struct LogsPanelView: View {
                     Button(model.t(.logsCopy)) {
                         model.copyLogsToPasteboard()
                     }
-                    Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
 
                 ScrollView {
@@ -1944,6 +1923,62 @@ struct LogsTabView: View {
             Text(model.t(.logs))
                 .font(.headline)
             LogsPanelView(compact: false)
+            Spacer()
+        }
+        .padding(16)
+    }
+}
+
+struct SettingsTabView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(model.t(.settingsTitle))
+                .font(.headline)
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(model.t(.language))
+                            .frame(width: 120, alignment: .leading)
+                        Picker(model.t(.language), selection: $model.language) {
+                            ForEach(AppLanguage.allCases) { language in
+                                Text(model.languageLabel(language)).tag(language)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+
+                    HStack {
+                        Text(model.t(.terminalApp))
+                            .frame(width: 120, alignment: .leading)
+                        Picker(model.t(.terminalApp), selection: $model.selectedTerminalApp) {
+                            ForEach(TerminalApp.allCases) { app in
+                                Text(app.displayName).tag(app)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+
+                    HStack {
+                        Text(model.t(.appVersion))
+                            .frame(width: 120, alignment: .leading)
+                        Text(model.appVersionDisplay)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack {
+                        Text(model.t(.usageGuide))
+                            .frame(width: 120, alignment: .leading)
+                        Button(model.t(.usageGuide)) {
+                            model.openUsageGuide()
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
             Spacer()
         }
         .padding(16)
