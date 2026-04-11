@@ -119,6 +119,19 @@ enum UIKey {
     case usageGuide
     case guideOpened
     case guideOpenFailed
+    case searchHosts
+    case recentConnections
+    case copySSHCommand
+    case copiedSSHCommand
+    case noRecentConnections
+    case savePreviewBefore
+    case savePreviewAfter
+    case draftValidation
+    case draftValidationClear
+    case logsErrorsOnly
+    case logsCopy
+    case logsCopied
+    case logsEmpty
 }
 
 struct L10n {
@@ -210,6 +223,19 @@ struct L10n {
         case .usageGuide: return zh ? "使用说明" : "User Guide"
         case .guideOpened: return zh ? "已打开使用说明" : "User guide opened"
         case .guideOpenFailed: return zh ? "打开使用说明失败" : "Failed to open user guide"
+        case .searchHosts: return zh ? "搜索连接（别名/主机/分组/标签）" : "Search hosts (alias/host/group/tag)"
+        case .recentConnections: return zh ? "最近连接" : "Recent Connections"
+        case .copySSHCommand: return zh ? "复制 SSH 命令" : "Copy SSH Command"
+        case .copiedSSHCommand: return zh ? "已复制 SSH 命令" : "Copied SSH command"
+        case .noRecentConnections: return zh ? "暂无最近连接" : "No recent connections"
+        case .savePreviewBefore: return zh ? "变更前（Before）" : "Before"
+        case .savePreviewAfter: return zh ? "变更后（After）" : "After"
+        case .draftValidation: return zh ? "字段校验" : "Field Validation"
+        case .draftValidationClear: return zh ? "字段校验通过" : "No field validation issues"
+        case .logsErrorsOnly: return zh ? "仅错误" : "Errors only"
+        case .logsCopy: return zh ? "复制日志" : "Copy Logs"
+        case .logsCopied: return zh ? "日志已复制" : "Logs copied"
+        case .logsEmpty: return zh ? "暂无日志" : "No logs yet"
         }
     }
 
@@ -251,7 +277,20 @@ struct IdentityOption: Identifiable, Hashable {
 struct SavePlan {
     var changes: [String]
     var warnings: [String]
-    var previewText: String
+    var beforePreviewText: String
+    var afterPreviewText: String
+}
+
+struct LogEntry: Identifiable, Hashable {
+    enum Level: String {
+        case info
+        case error
+    }
+
+    let id = UUID()
+    let date: Date
+    let level: Level
+    let message: String
 }
 
 struct HostDraft: Equatable {
@@ -413,6 +452,7 @@ final class AppModel: ObservableObject {
     @Published var baselineDraft: HostDraft?
     @Published var isDraftDirty = false
     @Published var statusMessage = ""
+    @Published var hostSearchQuery = ""
 
     @Published var keyItems: [SSHLocalKey] = []
     @Published var generateName = "id_ed25519_sshcm"
@@ -423,18 +463,37 @@ final class AppModel: ObservableObject {
     @Published var selectedTerminalApp: TerminalApp = .terminal
     @Published var showSavePreview = false
     @Published var pendingSavePlan: SavePlan?
+    @Published var logs: [LogEntry] = []
+    @Published var showErrorLogsOnly = false
+    @Published var recentConnections: [String] = []
 
     private let store = SSHConfigStore()
     private let keyManager = SSHKeyManager()
     private let processRunner = ProcessRunner()
     private let fileManager = FileManager.default
+    private let recentConnectionsKey = "sshcm.recentConnections"
 
     var groupedHosts: [(String, [SSHHostEntry])] {
-        let grouped = Dictionary(grouping: hosts) { $0.metadata.group }
+        let query = hostSearchQuery.trimmed.lowercased()
+        let filteredHosts = query.isEmpty ? hosts : hosts.filter { host in
+            if host.primaryAlias.lowercased().contains(query) { return true }
+            if host.aliases.contains(where: { $0.lowercased().contains(query) }) { return true }
+            if host.hostName.lowercased().contains(query) { return true }
+            if host.metadata.group.lowercased().contains(query) { return true }
+            if host.metadata.tags.contains(where: { $0.lowercased().contains(query) }) { return true }
+            return false
+        }
+
+        let grouped = Dictionary(grouping: filteredHosts) { $0.metadata.group }
         return grouped.keys.sorted().map { key in
             let values = (grouped[key] ?? []).sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
             return (key, values)
         }
+    }
+
+    var filteredLogs: [LogEntry] {
+        let source = showErrorLogsOnly ? logs.filter { $0.level == .error } : logs
+        return Array(source.suffix(200))
     }
 
     var selectedIndex: Int? {
@@ -462,6 +521,74 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func setInfo(_ message: String) {
+        statusMessage = message
+        appendLog(level: .info, message: message)
+    }
+
+    func setError(_ message: String) {
+        statusMessage = message
+        appendLog(level: .error, message: message)
+    }
+
+    func copyLogsToPasteboard() {
+        let text = filteredLogsText
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        setInfo(t(.logsCopied))
+    }
+
+    var filteredLogsText: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return filteredLogs
+            .map { entry in
+                "[\(formatter.string(from: entry.date))] [\(entry.level.rawValue.uppercased())] \(entry.message)"
+            }
+            .joined(separator: "\n")
+    }
+
+    func copySelectedSSHCommand() {
+        guard let alias = selectedHost?.primaryAlias.trimmed, !alias.isEmpty else {
+            setError("\(t(.terminalLaunchFailed)): empty host alias")
+            return
+        }
+        let command = "ssh \(alias)"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+        setInfo("\(t(.copiedSSHCommand)): \(command)")
+    }
+
+    func selectHost(alias: String) {
+        guard let host = hosts.first(where: { $0.primaryAlias == alias }) else { return }
+        selectedID = host.id
+        loadDraftForSelection()
+    }
+
+    private func appendLog(level: LogEntry.Level, message: String) {
+        logs.append(LogEntry(date: Date(), level: level, message: message))
+        if logs.count > 500 {
+            logs.removeFirst(logs.count - 500)
+        }
+    }
+
+    private func rememberRecentConnection(_ alias: String) {
+        let trimmedAlias = alias.trimmed
+        guard !trimmedAlias.isEmpty else { return }
+        recentConnections.removeAll { $0.caseInsensitiveCompare(trimmedAlias) == .orderedSame }
+        recentConnections.insert(trimmedAlias, at: 0)
+        if recentConnections.count > 8 {
+            recentConnections.removeLast(recentConnections.count - 8)
+        }
+        UserDefaults.standard.set(recentConnections, forKey: recentConnectionsKey)
+    }
+
+    private func loadRecentConnections() {
+        let raw = UserDefaults.standard.stringArray(forKey: recentConnectionsKey) ?? []
+        let normalized = raw.map { $0.trimmed }.filter { !$0.isEmpty }
+        recentConnections = Array(normalized.prefix(8))
+    }
+
     func load() {
         do {
             let loaded = try store.loadDocument()
@@ -474,9 +601,10 @@ final class AppModel: ObservableObject {
             }
             loadDraftForSelection()
             refreshKeys(silent: true)
-            statusMessage = "\(t(.loadedHosts)): \(hosts.count)"
+            loadRecentConnections()
+            setInfo("\(t(.loadedHosts)): \(hosts.count)")
         } catch {
-            statusMessage = "\(t(.loadFailed)): \(error.localizedDescription)"
+            setError("\(t(.loadFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -498,7 +626,7 @@ final class AppModel: ObservableObject {
 
     func prepareSave() {
         guard !isDraftDirty else {
-            statusMessage = t(.draftMustSaveFirst)
+            setError(t(.draftMustSaveFirst))
             return
         }
 
@@ -509,7 +637,7 @@ final class AppModel: ObservableObject {
 
     func confirmSaveFromPreview() {
         guard !isDraftDirty else {
-            statusMessage = t(.draftMustSaveFirst)
+            setError(t(.draftMustSaveFirst))
             return
         }
 
@@ -519,14 +647,14 @@ final class AppModel: ObservableObject {
             let backup = result.backupURL?.lastPathComponent ?? "none"
             let warningCount = pendingSavePlan?.warnings.count ?? 0
             if warningCount > 0 {
-                statusMessage = "\(t(.savedHosts)): \(hosts.count), backup: \(backup), \(t(.validateWarningsPrefix)): \(warningCount)"
+                setInfo("\(t(.savedHosts)): \(hosts.count), backup: \(backup), \(t(.validateWarningsPrefix)): \(warningCount)")
             } else {
-                statusMessage = "\(t(.savedHosts)): \(hosts.count), backup: \(backup)"
+                setInfo("\(t(.savedHosts)): \(hosts.count), backup: \(backup)")
             }
             showSavePreview = false
             pendingSavePlan = nil
         } catch {
-            statusMessage = "\(t(.saveFailed)): \(error.localizedDescription)"
+            setError("\(t(.saveFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -551,12 +679,12 @@ final class AppModel: ObservableObject {
         hosts = nextHosts
         baselineDraft = HostDraft(host: nextHosts[index])
         isDraftDirty = false
-        statusMessage = "\(t(.changesSavedInMemory)) [\(nextHosts[index].metadata.group)]"
+        setInfo("\(t(.changesSavedInMemory)) [\(nextHosts[index].metadata.group)]")
     }
 
     func revertConnectionChanges() {
         isDraftDirty = false
-        statusMessage = t(.changesReverted)
+        setInfo(t(.changesReverted))
     }
 
     func addHost() {
@@ -575,7 +703,7 @@ final class AppModel: ObservableObject {
         hosts.append(host)
         selectedID = host.id
         loadDraftForSelection()
-        statusMessage = "\(t(.addedHost)): \(host.primaryAlias)"
+        setInfo("\(t(.addedHost)): \(host.primaryAlias)")
     }
 
     func deleteSelectedHost() {
@@ -583,18 +711,18 @@ final class AppModel: ObservableObject {
         let removed = hosts.remove(at: index)
         selectedID = hosts.first?.id
         loadDraftForSelection()
-        statusMessage = "\(t(.deletedHost)): \(removed.primaryAlias)"
+        setInfo("\(t(.deletedHost)): \(removed.primaryAlias)")
     }
 
     func refreshKeys(silent: Bool = false) {
         do {
             keyItems = try keyManager.listLocalKeys()
             if !silent {
-                statusMessage = "\(t(.currentKeys)): \(keyItems.count)"
+                setInfo("\(t(.currentKeys)): \(keyItems.count)")
             }
         } catch {
             if !silent {
-                statusMessage = "\(t(.keysLoadFailed)): \(error.localizedDescription)"
+                setError("\(t(.keysLoadFailed)): \(error.localizedDescription)")
             }
         }
     }
@@ -606,9 +734,9 @@ final class AppModel: ObservableObject {
                 _ = try keyManager.addKeyToAgent(key, useKeychain: useKeychain)
             }
             refreshKeys(silent: true)
-            statusMessage = "\(t(.generatedKey)): \(key.path)"
+            setInfo("\(t(.generatedKey)): \(key.path)")
         } catch {
-            statusMessage = "\(t(.keyGenerationFailed)): \(error.localizedDescription)"
+            setError("\(t(.keyGenerationFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -619,9 +747,9 @@ final class AppModel: ObservableObject {
                 _ = try keyManager.addKeyToAgent(key, useKeychain: useKeychain)
             }
             refreshKeys(silent: true)
-            statusMessage = "\(t(.importedKey)): \(key.path)"
+            setInfo("\(t(.importedKey)): \(key.path)")
         } catch {
-            statusMessage = "\(t(.importFailed)): \(error.localizedDescription)"
+            setError("\(t(.importFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -629,16 +757,16 @@ final class AppModel: ObservableObject {
         do {
             let result = try keyManager.doctorKeys()
             refreshKeys(silent: true)
-            statusMessage = "\(t(.doctorDone)): fixed \(result.fixedPermissions.count), agent \(result.sshAgentReachable ? "ok" : "unreachable")"
+            setInfo("\(t(.doctorDone)): fixed \(result.fixedPermissions.count), agent \(result.sshAgentReachable ? "ok" : "unreachable")")
         } catch {
-            statusMessage = "\(t(.doctorFailed)): \(error.localizedDescription)"
+            setError("\(t(.doctorFailed)): \(error.localizedDescription)")
         }
     }
 
     func rollbackLatestBackup() {
         do {
             guard let latest = try latestBackupURL() else {
-                statusMessage = "\(t(.rollbackFailed)): no backup found"
+                setError("\(t(.rollbackFailed)): no backup found")
                 return
             }
             if fileManager.fileExists(atPath: store.configFileURL.path) {
@@ -647,9 +775,9 @@ final class AppModel: ObservableObject {
                 try fileManager.copyItem(at: latest, to: store.configFileURL)
             }
             load()
-            statusMessage = "\(t(.rolledBackToBackup)): \(latest.lastPathComponent)"
+            setInfo("\(t(.rolledBackToBackup)): \(latest.lastPathComponent)")
         } catch {
-            statusMessage = "\(t(.rollbackFailed)): \(error.localizedDescription)"
+            setError("\(t(.rollbackFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -705,12 +833,12 @@ final class AppModel: ObservableObject {
 
             load()
             if fixedFiles.isEmpty {
-                statusMessage = "\(t(.autoFixDone)): no changes needed"
+                setInfo("\(t(.autoFixDone)): no changes needed")
             } else {
-                statusMessage = "\(t(.autoFixDone)): \(fixedFiles.joined(separator: ", "))"
+                setInfo("\(t(.autoFixDone)): \(fixedFiles.joined(separator: ", "))")
             }
         } catch {
-            statusMessage = "\(t(.autoFixFailed)): \(error.localizedDescription)"
+            setError("\(t(.autoFixFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -725,9 +853,9 @@ final class AppModel: ObservableObject {
             let content = usageGuideHTML()
             try content.write(to: guideURL, atomically: true, encoding: .utf8)
             NSWorkspace.shared.open(guideURL)
-            statusMessage = "\(t(.guideOpened)): \(guideURL.path)"
+            setInfo("\(t(.guideOpened)): \(guideURL.path)")
         } catch {
-            statusMessage = "\(t(.guideOpenFailed)): \(error.localizedDescription)"
+            setError("\(t(.guideOpenFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -736,7 +864,7 @@ final class AppModel: ObservableObject {
         do {
             let alias = host.primaryAlias.trimmed
             guard !alias.isEmpty else {
-                statusMessage = "\(t(.terminalLaunchFailed)): empty host alias"
+                setError("\(t(.terminalLaunchFailed)): empty host alias")
                 return
             }
 
@@ -745,9 +873,10 @@ final class AppModel: ObservableObject {
 
             let command = "/usr/bin/ssh \(shellQuote(alias))"
             try launchTerminal(command: command, terminal: selectedTerminalApp)
-            statusMessage = "\(t(.launchedTerminal)): \(alias) (\(selectedTerminalApp.displayName))"
+            rememberRecentConnection(alias)
+            setInfo("\(t(.launchedTerminal)): \(alias) (\(selectedTerminalApp.displayName))")
         } catch {
-            statusMessage = "\(t(.terminalLaunchFailed)): \(error.localizedDescription)"
+            setError("\(t(.terminalLaunchFailed)): \(error.localizedDescription)")
         }
     }
 
@@ -1079,7 +1208,7 @@ final class AppModel: ObservableObject {
         }
 
         let warnings = validate(hosts: currentHosts, globalDirectives: globalDirectives)
-        let preview = currentHosts
+        let beforePreview = baselineHosts
             .sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
             .map { host in
                 """
@@ -1092,7 +1221,21 @@ final class AppModel: ObservableObject {
                 """
             }
             .joined(separator: "\n\n")
-        return SavePlan(changes: changes, warnings: warnings, previewText: preview)
+
+        let afterPreview = currentHosts
+            .sorted { $0.primaryAlias.lowercased() < $1.primaryAlias.lowercased() }
+            .map { host in
+                """
+                Host \(host.aliases.joined(separator: " "))
+                  HostName \(host.hostName)
+                  User \(host.user ?? "-")
+                  Group \(host.metadata.group)
+                  ProxyJump \(host.proxyJump ?? "-")
+                  ProxyCommand \(host.proxyCommand ?? "-")
+                """
+            }
+            .joined(separator: "\n\n")
+        return SavePlan(changes: changes, warnings: warnings, beforePreviewText: beforePreview, afterPreviewText: afterPreview)
     }
 
     private func diffSummary(old: SSHHostEntry, new: SSHHostEntry) -> String {
@@ -1254,12 +1397,23 @@ struct SavePreviewSheet: View {
                     }
                 }
 
-                GroupBox("Config Preview") {
-                    ScrollView {
-                        Text(plan.previewText.isEmpty ? model.t(.noChangesDetected) : plan.previewText)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .top, spacing: 10) {
+                    GroupBox(model.t(.savePreviewBefore)) {
+                        ScrollView {
+                            Text(plan.beforePreviewText.isEmpty ? model.t(.noChangesDetected) : plan.beforePreviewText)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+
+                    GroupBox(model.t(.savePreviewAfter)) {
+                        ScrollView {
+                            Text(plan.afterPreviewText.isEmpty ? model.t(.noChangesDetected) : plan.afterPreviewText)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
@@ -1284,19 +1438,31 @@ struct ConnectionsTabView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $model.selectedID) {
-                ForEach(model.groupedHosts, id: \.0) { group, hosts in
-                    Section(group) {
-                        ForEach(hosts) { host in
-                            Text(host.primaryAlias)
+            VStack(spacing: 8) {
+                TextField(model.t(.searchHosts), text: $model.hostSearchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 8)
+
+                List(selection: $model.selectedID) {
+                    ForEach(model.groupedHosts, id: \.0) { group, hosts in
+                        Section(group) {
+                            ForEach(hosts) { host in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(host.primaryAlias)
+                                    Text(host.hostName)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 .tag(host.id)
+                            }
                         }
                     }
                 }
-            }
-            .listStyle(.inset)
-            .onChange(of: model.selectedID) { _, _ in
-                model.loadDraftForSelection()
+                .listStyle(.inset)
+                .onChange(of: model.selectedID) { _, _ in
+                    model.loadDraftForSelection()
+                }
             }
         } detail: {
             VStack(alignment: .leading, spacing: 12) {
@@ -1307,18 +1473,7 @@ struct ConnectionsTabView: View {
                         .foregroundStyle(.secondary)
                 }
                 Divider()
-                GroupBox(model.t(.logs)) {
-                    HStack(alignment: .top) {
-                        Text(model.statusMessage.isEmpty ? "-" : model.statusMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                        Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                LogsPanelView()
                 Spacer()
             }
             .padding(16)
@@ -1337,6 +1492,21 @@ struct HostEditorView: View {
                 Text(model.t(.hostConfig))
                     .font(.headline)
                 Spacer()
+                Menu(model.t(.recentConnections)) {
+                    if model.recentConnections.isEmpty {
+                        Text(model.t(.noRecentConnections))
+                    } else {
+                        ForEach(model.recentConnections, id: \.self) { alias in
+                            Button(alias) {
+                                model.selectHost(alias: alias)
+                            }
+                        }
+                    }
+                }
+                Button(model.t(.copySSHCommand)) {
+                    model.copySelectedSSHCommand()
+                }
+                .disabled(model.selectedHost == nil)
                 if model.isDraftDirty {
                     Text(model.t(.unsavedChanges))
                         .font(.footnote)
@@ -1389,6 +1559,22 @@ struct HostEditorView: View {
                 }
                 row(model.t(.tags)) {
                     TextField("db,cn", text: bind(\.tagsText))
+                }
+            }
+
+            GroupBox(model.t(.draftValidation)) {
+                let issues = validationIssues()
+                if issues.isEmpty {
+                    Text(model.t(.draftValidationClear))
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(issues, id: \.self) { issue in
+                            Text("• \(issue)")
+                                .foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                 }
             }
 
@@ -1494,6 +1680,28 @@ struct HostEditorView: View {
         }
     }
 
+    private func validationIssues() -> [String] {
+        var issues: [String] = []
+        let zh = L10n.isChinese(model.language)
+        let aliases = workingDraft.aliasText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        if aliases.isEmpty {
+            issues.append(zh ? "Alias 不能为空" : "Alias is required")
+        }
+        if workingDraft.hostName.trimmed.isEmpty {
+            issues.append(zh ? "HostName 不能为空" : "HostName is required")
+        }
+        let jump = workingDraft.proxyJump.trimmed
+        let command = workingDraft.proxyCommand.trimmed
+        if !jump.isEmpty && !command.isEmpty {
+            issues.append(zh ? "ProxyJump 与 ProxyCommand 同时设置，请确认是否冲突" : "ProxyJump and ProxyCommand are both set; verify conflict risk")
+        }
+        let portText = workingDraft.portText.trimmed
+        if !portText.isEmpty, Int(portText) == nil {
+            issues.append(zh ? "Port 必须是数字" : "Port must be a number")
+        }
+        return issues
+    }
+
     private func identityBinding() -> Binding<String> {
         Binding(
             get: { workingDraft.identityFile },
@@ -1556,6 +1764,54 @@ struct HostEditorView: View {
             Text(label)
                 .frame(width: 120, alignment: .leading)
             field()
+        }
+    }
+}
+
+struct LogsPanelView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        GroupBox(model.t(.logs)) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Toggle(model.t(.logsErrorsOnly), isOn: $model.showErrorLogsOnly)
+                        .toggleStyle(.checkbox)
+                    Spacer()
+                    Button(model.t(.logsCopy)) {
+                        model.copyLogsToPasteboard()
+                    }
+                    Text("\(model.t(.appVersion)) \(model.appVersionDisplay)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if model.filteredLogs.isEmpty {
+                            Text(model.t(.logsEmpty))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            ForEach(model.filteredLogs) { entry in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(entry.level == .error ? "ERROR" : "INFO")
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(entry.level == .error ? .red : .secondary)
+                                        .frame(width: 44, alignment: .leading)
+                                    Text(entry.message)
+                                        .font(.footnote)
+                                        .foregroundStyle(entry.level == .error ? .primary : .secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 80, maxHeight: 160)
+            }
         }
     }
 }
@@ -1623,13 +1879,7 @@ struct KeyToolsTabView: View {
             }
 
             Divider()
-            GroupBox(model.t(.logs)) {
-                Text(model.statusMessage.isEmpty ? "-" : model.statusMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
+            LogsPanelView()
             Spacer()
         }
         .padding(16)
