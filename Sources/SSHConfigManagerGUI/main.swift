@@ -115,8 +115,10 @@ enum UIKey {
     case logs
     case toolsMenu
     case usageGuide
+    case donate
     case guideOpened
     case guideOpenFailed
+    case donateOpenFailed
     case searchHosts
     case recentConnections
     case copySSHCommand
@@ -229,8 +231,10 @@ struct L10n {
         case .logs: return zh ? "日志" : "Logs"
         case .toolsMenu: return zh ? "工具" : "Tools"
         case .usageGuide: return zh ? "使用说明" : "User Guide"
+        case .donate: return zh ? "打赏" : "Donate"
         case .guideOpened: return zh ? "已打开使用说明" : "User guide opened"
         case .guideOpenFailed: return zh ? "打开使用说明失败" : "Failed to open user guide"
+        case .donateOpenFailed: return zh ? "打开打赏链接失败" : "Failed to open donate link"
         case .searchHosts: return zh ? "搜索连接（别名/主机/分组/标签）" : "Search hosts (alias/host/group/tag)"
         case .recentConnections: return zh ? "最近连接" : "Recent Connections"
         case .copySSHCommand: return zh ? "复制 SSH 命令" : "Copy SSH Command"
@@ -977,6 +981,18 @@ final class AppModel: ObservableObject {
             setInfo("\(t(.guideOpened)): \(guideURL.path)")
         } catch {
             setError("\(t(.guideOpenFailed)): \(error.localizedDescription)")
+        }
+    }
+
+    func openDonateLink() {
+        guard let url = URL(string: "https://donate.ficory.com/") else {
+            setError(t(.donateOpenFailed))
+            return
+        }
+        if NSWorkspace.shared.open(url) {
+            setInfo("Opened donate link: \(url.absoluteString)")
+        } else {
+            setError(t(.donateOpenFailed))
         }
     }
 
@@ -1954,6 +1970,14 @@ struct SettingsTabView: View {
                             .frame(width: 120, alignment: .leading)
                         Button(model.t(.usageGuide)) {
                             model.openUsageGuide()
+                        }
+                    }
+
+                    HStack {
+                        Text(model.t(.donate))
+                            .frame(width: 120, alignment: .leading)
+                        Button(model.t(.donate)) {
+                            model.openDonateLink()
                         }
                     }
                 }
